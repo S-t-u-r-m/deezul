@@ -1,0 +1,56 @@
+{
+  "name": "deezul",
+  "version": "1.0.0",
+  "description": "Lightweight reactive UI framework with Shadow DOM web components, proxy-based reactivity, and bytecode-compiled templates",
+  "type": "module",
+  "main": "dist/deezul.esm.js",
+  "module": "dist/deezul.esm.js",
+  "browser": "dist/deezul.iife.js",
+  "exports": {
+    ".": {
+      "import": "./dist/deezul.esm.js",
+      "default": "./dist/deezul.esm.js"
+    },
+    "./compiler": "./src/compiler/library/main.js",
+    "./compiler/cli": "./src/compiler/bin/cli.js"
+  },
+  "bin": {
+    "deezul-compile": "./src/compiler/bin/cli.js"
+  },
+  "files": [
+    "dist/",
+    "src/runtime/",
+    "src/compiler/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "cd tooling/bundler && npx rollup -c rollup.config.js",
+    "build:showcase": "node examples/showcase/build.js",
+    "setup": "npm install && npm run build && npm run build:showcase",
+    "compile": "node src/compiler/bin/cli.js",
+    "compile:watch": "node src/compiler/bin/cli.js --watch",
+    "test": "node test/run.js",
+    "dev": "node examples/showcase/server.js"
+  },
+  "devDependencies": {
+    "@rollup/plugin-terser": "^0.4.0",
+    "chokidar": "^4.0.3",
+    "css-tree": "^3.1.0",
+    "htmlparser2": "^9.1.0",
+    "http-server": "^14.1.1",
+    "rollup": "^4.0.0"
+  },
+  "keywords": [
+    "framework",
+    "web-components",
+    "shadow-dom",
+    "reactivity",
+    "proxy",
+    "bytecode",
+    "spa",
+    "router",
+    "compiler"
+  ],
+  "license": "MIT"
+}

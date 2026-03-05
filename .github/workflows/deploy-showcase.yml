@@ -1,0 +1,66 @@
+name: Deploy Showcase
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build runtime
+        run: npm run build
+
+      - name: Copy runtime to showcase
+        run: cp dist/deezul.esm.js examples/showcase/deezul.esm.js
+
+      - name: Compile showcase components
+        run: |
+          mkdir -p examples/showcase/compiled
+          for file in examples/showcase/src/**/*.js; do
+            name=$(basename "$file" .js)
+            echo "Compiling: $file"
+            node src/compiler/bin/cli.js "$file" "examples/showcase/compiled/${name}.compiled.js"
+          done
+
+      - name: Inject base href for GitHub Pages
+        run: sed -i 's|<head>|<head><base href="/${{ github.event.repository.name }}/">|' examples/showcase/index.html
+
+      - name: Create SPA fallback
+        run: cp examples/showcase/index.html examples/showcase/404.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/showcase
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,14 @@
+{
+  "name": "@deezul/bundler",
+  "version": "1.0.0",
+  "description": "Deezul runtime bundler - tree-shakes and minifies into a single file",
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c rollup.config.js"
+  },
+  "devDependencies": {
+    "rollup": "^4.0.0",
+    "@rollup/plugin-terser": "^0.4.0"
+  },
+  "license": "MIT"
+}

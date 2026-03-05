@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Showcase build artifacts (CI builds these fresh)
+examples/showcase/compiled/
+examples/showcase/deezul.esm.js
+examples/showcase/compiler/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Logs
+*.log
+npm-debug.log*

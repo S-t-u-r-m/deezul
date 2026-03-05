@@ -1,0 +1,27 @@
+{
+  "name": "@deezul/compiler",
+  "version": "1.0.0",
+  "description": "Deezul component compiler - transforms templates into optimized bytecode",
+  "type": "module",
+  "main": "library/main.js",
+  "bin": {
+    "deezul-compile": "./bin/cli.js"
+  },
+  "scripts": {
+    "build": "node bin/cli.js",
+    "watch": "node bin/cli.js --watch"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "css-tree": "^3.1.0",
+    "htmlparser2": "^9.1.0"
+  },
+  "keywords": [
+    "deezul",
+    "compiler",
+    "template",
+    "component",
+    "bytecode"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deezul Benchmark</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fafafa;
+            color: #333;
+        }
+        h1 { margin-bottom: 4px; }
+        .subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 20px;
+            padding: 16px;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+        }
+        button {
+            padding: 8px 14px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            background: #fff;
+            border-radius: 4px;
+            font-size: 13px;
+            transition: background 0.15s;
+        }
+        button:hover { background: #f0f0f0; }
+        button:active { background: #e0e0e0; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-warm { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+        .btn-warm:hover { background: #d97706; }
+        .separator { width: 1px; background: #e0e0e0; margin: 0 4px; }
+        .layout { display: flex; gap: 20px; }
+        .results-panel { flex: 1; min-width: 400px; }
+        .component-panel { flex: 1; min-width: 300px; }
+        table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; }
+        th { background: #f5f5f5; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #666; }
+        th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        td:nth-child(2), td:nth-child(3), td:nth-child(4) { text-align: right; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 13px; }
+        th:nth-child(2), th:nth-child(3), th:nth-child(4) { text-align: right; }
+        tr:last-child td { border-bottom: none; }
+        .time-fast { color: #16a34a; }
+        .time-med { color: #ca8a04; }
+        .time-slow { color: #dc2626; }
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        .row-count { font-weight: 600; }
+        .component-area {
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background: #fff;
+            max-height: 400px;
+            overflow: auto;
+        }
+        .component-area dz-component { display: block; }
+        #status { color: #888; }
+    </style>
+</head>
+<body>
+    <h1>Deezul Benchmark</h1>
+    <p class="subtitle">js-framework-benchmark style operations &mdash; measures reactive DOM updates end-to-end</p>
+
+    <div class="controls">
+        <button class="btn-primary" id="btn-runAll">Run All</button>
+        <button class="btn-warm" id="btn-warmup">Warmup</button>
+        <div class="separator"></div>
+        <button id="btn-create1k">Create 1,000</button>
+        <button id="btn-create10k">Create 10,000</button>
+        <button id="btn-replace1k">Replace 1,000</button>
+        <button id="btn-append1k">Append 1,000</button>
+        <button id="btn-update10th">Update 10th</button>
+        <button id="btn-swapRows">Swap Rows</button>
+        <button id="btn-remove">Remove Row</button>
+        <button id="btn-clear">Clear</button>
+    </div>
+
+    <div class="status-bar">
+        <span>Rows: <span class="row-count" id="row-count">0</span></span>
+        <span id="status">Waiting for component...</span>
+    </div>
+
+    <div class="layout">
+        <div class="results-panel">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Operation</th>
+                        <th>JS</th>
+                        <th>Total</th>
+                        <th>Rows</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body">
+                </tbody>
+            </table>
+        </div>
+        <div class="component-panel">
+            <div class="component-area">
+                <dz-component dz-type="bench-list"></dz-component>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/bench/main.js"></script>
+</body>
+</html>
