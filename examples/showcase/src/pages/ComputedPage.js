@@ -1,0 +1,130 @@
+export default Deezul.Component({
+    template: `
+        <div class="page">
+            <h1>Computed Properties & Watchers</h1>
+            <p class="intro">Computed properties derive values from reactive data with automatic caching. Watchers let you run side effects when data changes.</p>
+
+            <h2>Computed Properties</h2>
+            <p>Define computed properties as getter functions. They automatically track which reactive properties they depend on and only re-evaluate when those dependencies change:</p>
+            <pre class="code-block" :pre><code>export default Deezul.Component({
+    template: \`
+        &lt;p&gt;{{ fullName }}&lt;/p&gt;
+        &lt;p&gt;{{ greeting }}&lt;/p&gt;
+    \`,
+
+    data: () => ({
+        firstName: 'John',
+        lastName: 'Doe'
+    }),
+
+    computed: {
+        fullName() {
+            return this.firstName + ' ' + this.lastName;
+        },
+        greeting() {
+            // Computed can depend on other computed
+            return 'Hello, ' + this.fullName + '!';
+        }
+    }
+});</code></pre>
+
+            <h3>How Caching Works</h3>
+            <ul>
+                <li>On first access, the getter runs and the result is cached</li>
+                <li>Subsequent accesses return the cached value (no re-evaluation)</li>
+                <li>When a dependency changes, the cache is invalidated</li>
+                <li>Next access triggers re-evaluation and re-caching</li>
+            </ul>
+
+            <h2>Live Demo</h2>
+            <div class="demo-box">
+                <div class="demo-row">
+                    <label>First:</label>
+                    <input :model="firstName" class="demo-input" />
+                </div>
+                <div class="demo-row">
+                    <label>Last:</label>
+                    <input :model="lastName" class="demo-input" />
+                </div>
+                <p class="demo-result">Full name: <strong>{{ fullName }}</strong></p>
+                <p class="demo-result">Greeting: <strong>{{ greeting }}</strong></p>
+            </div>
+
+            <h2>Watchers</h2>
+            <p>Watchers run a callback whenever a specific reactive property changes. Useful for side effects like logging, API calls, or localStorage sync:</p>
+            <pre class="code-block" :pre><code>export default Deezul.Component({
+    data: () => ({
+        searchQuery: '',
+        results: []
+    }),
+
+    watch: {
+        searchQuery(newVal, oldVal) {
+            console.log('Search changed:', oldVal, '->', newVal);
+            // Fetch new results...
+        }
+    }
+});</code></pre>
+
+            <h2>Computed vs Watchers</h2>
+            <table class="compare-table">
+                <tr><th></th><th>Computed</th><th>Watcher</th></tr>
+                <tr><td>Purpose</td><td>Derive a value</td><td>Run side effects</td></tr>
+                <tr><td>Return value</td><td>Yes (cached)</td><td>No</td></tr>
+                <tr><td>Dependencies</td><td>Auto-tracked</td><td>Explicit (property name)</td></tr>
+                <tr><td>Use for</td><td>Formatting, filtering, combining data</td><td>API calls, logging, DOM manipulation</td></tr>
+            </table>
+
+            <p class="next">Next: <a href="/routing">Routing</a> — SPA navigation with the built-in router.</p>
+        </div>
+    `,
+
+    data: () => ({
+        firstName: 'John',
+        lastName: 'Doe'
+    }),
+
+    computed: {
+        fullName() {
+            return this.firstName + ' ' + this.lastName;
+        },
+        greeting() {
+            return 'Hello, ' + this.fullName + '!';
+        }
+    },
+
+    styles: `
+        .page { max-width: 760px; }
+        h1 { font-size: 32px; font-weight: 800; color: #1a1a2e; margin: 0 0 8px; }
+        h2 { font-size: 19px; font-weight: 700; color: #1a1a2e; margin: 32px 0 10px; }
+        h3 { font-size: 16px; font-weight: 600; color: #333; margin: 20px 0 8px; }
+        .intro { font-size: 16px; color: #555; line-height: 1.6; margin: 0 0 24px; }
+        p { font-size: 14px; color: #444; line-height: 1.6; margin: 0 0 12px; }
+        ul { font-size: 14px; color: #444; line-height: 1.8; margin: 0 0 12px; padding-left: 24px; }
+        code { background: #eef; padding: 2px 5px; border-radius: 3px; font-size: 13px; font-family: 'Consolas', 'Monaco', monospace; }
+        .code-block {
+            background: #1e1e2e; color: #cdd6f4; padding: 16px 20px; border-radius: 8px;
+            font-size: 13px; line-height: 1.6; overflow-x: auto; margin: 0 0 12px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace; white-space: pre;
+        }
+        .code-block code { background: none; padding: 0; color: inherit; font-family: inherit; }
+        .demo-box {
+            background: #fff; border: 1px solid #e0e4e8; border-radius: 10px;
+            padding: 24px; margin: 12px 0 16px;
+        }
+        .demo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .demo-row label { font-size: 14px; color: #444; min-width: 50px; }
+        .demo-input {
+            flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px;
+            font-size: 14px; outline: none;
+        }
+        .demo-input:focus { border-color: #00d4ff; }
+        .demo-result { font-size: 15px; margin: 8px 0; }
+        .compare-table { width: 100%; border-collapse: collapse; margin: 0 0 12px; font-size: 14px; }
+        .compare-table th { text-align: left; padding: 8px 12px; background: #eef2f5; border-bottom: 2px solid #ddd; color: #333; }
+        .compare-table td { padding: 8px 12px; border-bottom: 1px solid #eee; color: #444; }
+        .next { margin-top: 32px; font-size: 15px; color: #555; }
+        .next a { color: #00d4ff; text-decoration: none; font-weight: 600; }
+        .next a:hover { text-decoration: underline; }
+    `
+});

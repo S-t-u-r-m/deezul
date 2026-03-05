@@ -305,8 +305,8 @@ export function processAST(ast, loopVars) {
 			if (name.startsWith(':')) {
 				const attrName = name.slice(1);
 
-				// Two-way binding
-				if (attrName === 'bind' && isFormElement(tag)) {
+				// Two-way binding (:model="prop" on form elements)
+				if (attrName === 'model' && isFormElement(tag)) {
 					const properties = extractPropertyPaths(value);
 					for (const prop of properties) addString(prop);
 

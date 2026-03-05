@@ -50,33 +50,37 @@ export function parseComponent(source) {
 		$error: null
 	};
 
-	// Template (required)
+	// Template (required) — extract from original body
 	result.template = extractStringProperty(componentBody, 'template');
 
+	// Blank out template and styles strings so code examples inside them
+	// don't get picked up as real methods/data/hooks/etc.
+	const scriptBody = blankStringProperties(componentBody, ['template', 'styles']);
+
 	// Data function
-	result.data = extractFunctionProperty(componentBody, 'data');
+	result.data = extractFunctionProperty(scriptBody, 'data');
 
 	// Methods object
-	result.method = extractObjectProperty(componentBody, 'methods');
+	result.method = extractObjectProperty(scriptBody, 'methods');
 
 	// Computed properties
-	result.computed = extractObjectProperty(componentBody, 'computed');
+	result.computed = extractObjectProperty(scriptBody, 'computed');
 
 	// Static values
-	result.staticData = extractObjectProperty(componentBody, 'static');
+	result.staticData = extractObjectProperty(scriptBody, 'static');
 
 	// Watchers
-	result.watcher = extractObjectProperty(componentBody, 'watch');
+	result.watcher = extractObjectProperty(scriptBody, 'watch');
 
-	// Styles
+	// Styles — extract from original body (not blanked)
 	result.style = extractStringProperty(componentBody, 'styles');
 
 	// Lifecycle hooks
-	result.$created = extractHookFunction(componentBody, '\\$created');
-	result.$mounted = extractHookFunction(componentBody, '\\$mounted');
-	result.$updated = extractHookFunction(componentBody, '\\$updated');
-	result.$unmounted = extractHookFunction(componentBody, '\\$unmounted');
-	result.$error = extractHookFunction(componentBody, '\\$error');
+	result.$created = extractHookFunction(scriptBody, '\\$created');
+	result.$mounted = extractHookFunction(scriptBody, '\\$mounted');
+	result.$updated = extractHookFunction(scriptBody, '\\$updated');
+	result.$unmounted = extractHookFunction(scriptBody, '\\$unmounted');
+	result.$error = extractHookFunction(scriptBody, '\\$error');
 
 	return result;
 }
@@ -244,6 +248,55 @@ function extractHookFunction(source, hookName) {
 	}
 
 	return null;
+}
+
+/**
+ * Blank out string property values (template literals or quoted strings) so their
+ * content doesn't interfere with regex extraction of other properties.
+ * Replaces the string content with spaces while preserving the same length.
+ * @param {string} source - Component body
+ * @param {string[]} propNames - Property names to blank out
+ * @returns {string} Source with string contents blanked
+ */
+function blankStringProperties(source, propNames) {
+	let result = source;
+	for (const propName of propNames) {
+		const optComment = '(?:\\/\\*[\\s\\S]*?\\*\\/\\s*)?';
+		const patterns = [
+			new RegExp(`${propName}\\s*:\\s*${optComment}\``, 'g'),
+			new RegExp(`${propName}\\s*:\\s*${optComment}"`, 'g'),
+			new RegExp(`${propName}\\s*:\\s*${optComment}'`, 'g'),
+			new RegExp(`${propName}\\s*:\\s*html\``, 'g')
+		];
+
+		for (const pattern of patterns) {
+			const match = pattern.exec(result);
+			if (match) {
+				const contentStart = match.index + match[0].length;
+				const quoteChar = result[contentStart - 1];
+				let end = contentStart;
+
+				if (quoteChar === '`') {
+					// Find closing backtick (skip escaped ones)
+					while (end < result.length) {
+						if (result[end] === '`' && result[end - 1] !== '\\') break;
+						end++;
+					}
+				} else {
+					// Find closing quote
+					while (end < result.length) {
+						if (result[end] === quoteChar && result[end - 1] !== '\\') break;
+						end++;
+					}
+				}
+
+				// Replace content between quotes with spaces
+				result = result.slice(0, contentStart) + ' '.repeat(end - contentStart) + result.slice(end);
+				break; // Found this property, move to next
+			}
+		}
+	}
+	return result;
 }
 
 /**

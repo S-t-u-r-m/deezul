@@ -1,0 +1,130 @@
+export default Deezul.Component({
+    template: `
+        <div class="page">
+            <h1>Components</h1>
+            <p class="intro">Deezul components are Web Components powered by Shadow DOM. Each component has its own encapsulated styles, data, methods, and lifecycle.</p>
+
+            <h2>Defining a Component</h2>
+            <p>A component is defined with <code>Deezul.Component()</code>:</p>
+            <pre class="code-block" :pre><code>export default Deezul.Component({
+    template: \`
+        &lt;div class="greeting"&gt;
+            &lt;h1&gt;{{ message }}&lt;/h1&gt;
+            &lt;button @click="greet"&gt;Say Hello&lt;/button&gt;
+        &lt;/div&gt;
+    \`,
+
+    data: () => ({
+        message: 'Welcome!'
+    }),
+
+    methods: {
+        greet() {
+            this.message = 'Hello, World!';
+        }
+    },
+
+    styles: \`
+        .greeting { padding: 20px; }
+        h1 { color: #333; }
+    \`
+});</code></pre>
+
+            <h2>Component Properties</h2>
+            <table class="props-table">
+                <tr><th>Property</th><th>Type</th><th>Description</th></tr>
+                <tr><td><code>template</code></td><td>String</td><td>HTML template with bindings</td></tr>
+                <tr><td><code>data</code></td><td>Function</td><td>Factory returning initial reactive state</td></tr>
+                <tr><td><code>methods</code></td><td>Object</td><td>Component methods (accessible in template)</td></tr>
+                <tr><td><code>styles</code></td><td>String</td><td>Scoped CSS (Shadow DOM encapsulated)</td></tr>
+                <tr><td><code>computed</code></td><td>Object</td><td>Cached derived values</td></tr>
+                <tr><td><code>watch</code></td><td>Object</td><td>Watchers for reactive side effects</td></tr>
+            </table>
+
+            <h2>Shadow DOM</h2>
+            <p>Each component renders inside a Shadow DOM root. This means:</p>
+            <ul>
+                <li>Styles are <strong>scoped</strong> — they don't leak out or get affected by global CSS</li>
+                <li>Each component instance has its <strong>own DOM tree</strong></li>
+                <li>External styles cannot accidentally override component styles</li>
+            </ul>
+
+            <h2>Props</h2>
+            <p>Pass data from a parent to a child component using <code>:prop-name</code>:</p>
+            <pre class="code-block" :pre><code>&lt;!-- Parent template --&gt;
+&lt;user-card :user-name="selectedUser"&gt;&lt;/user-card&gt;</code></pre>
+            <p>The child receives the value in its <code>data()</code>:</p>
+            <pre class="code-block" :pre><code>// UserCard.js
+export default Deezul.Component({
+    template: \`&lt;div&gt;{{ userName }}&lt;/div&gt;\`,
+    data: () => ({
+        userName: ''   // receives prop value
+    })
+});</code></pre>
+
+            <h2>Slots</h2>
+            <p>Slots let parents project content into child components:</p>
+            <pre class="code-block" :pre><code>// Card.js — child component
+export default Deezul.Component({
+    template: \`
+        &lt;div class="card"&gt;
+            &lt;div class="header"&gt;
+                &lt;slot name="header"&gt;&lt;/slot&gt;
+            &lt;/div&gt;
+            &lt;div class="body"&gt;
+                &lt;slot&gt;&lt;/slot&gt;
+            &lt;/div&gt;
+        &lt;/div&gt;
+    \`
+});</code></pre>
+            <pre class="code-block" :pre><code>&lt;!-- Parent usage --&gt;
+&lt;my-card&gt;
+    &lt;span slot="header"&gt;Card Title&lt;/span&gt;
+    &lt;p&gt;This goes in the default slot.&lt;/p&gt;
+&lt;/my-card&gt;</code></pre>
+
+            <h2>Refs</h2>
+            <p>Access DOM elements directly with <code>:ref</code>:</p>
+            <pre class="code-block" :pre><code>export default Deezul.Component({
+    template: \`
+        &lt;input :ref="nameInput" /&gt;
+        &lt;button @click="focusInput"&gt;Focus&lt;/button&gt;
+    \`,
+    data: () => ({}),
+    methods: {
+        focusInput() {
+            this.$refs.nameInput.focus();
+        }
+    }
+});</code></pre>
+
+            <p class="next">Next: <a href="/reactivity">Reactivity</a> — how data binding works under the hood.</p>
+        </div>
+    `,
+
+    data: () => ({}),
+
+    styles: `
+        .page { max-width: 760px; }
+        h1 { font-size: 32px; font-weight: 800; color: #1a1a2e; margin: 0 0 8px; }
+        h2 { font-size: 19px; font-weight: 700; color: #1a1a2e; margin: 32px 0 10px; }
+        .intro { font-size: 16px; color: #555; line-height: 1.6; margin: 0 0 24px; }
+        p { font-size: 14px; color: #444; line-height: 1.6; margin: 0 0 12px; }
+        ul { font-size: 14px; color: #444; line-height: 1.8; margin: 0 0 12px; padding-left: 24px; }
+        li { margin-bottom: 4px; }
+        code { background: #eef; padding: 2px 5px; border-radius: 3px; font-size: 13px; font-family: 'Consolas', 'Monaco', monospace; }
+        .code-block {
+            background: #1e1e2e; color: #cdd6f4; padding: 16px 20px; border-radius: 8px;
+            font-size: 13px; line-height: 1.6; overflow-x: auto; margin: 0 0 12px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace; white-space: pre;
+        }
+        .code-block code { background: none; padding: 0; color: inherit; font-family: inherit; }
+        .props-table { width: 100%; border-collapse: collapse; margin: 0 0 12px; font-size: 14px; }
+        .props-table th { text-align: left; padding: 8px 12px; background: #eef2f5; border-bottom: 2px solid #ddd; color: #333; }
+        .props-table td { padding: 8px 12px; border-bottom: 1px solid #eee; color: #444; }
+        .props-table code { font-size: 12px; }
+        .next { margin-top: 32px; font-size: 15px; color: #555; }
+        .next a { color: #00d4ff; text-decoration: none; font-weight: 600; }
+        .next a:hover { text-decoration: underline; }
+    `
+});
