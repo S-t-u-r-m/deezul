@@ -1,9 +1,6 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
-
 # Showcase build artifacts (CI builds these fresh)
 examples/showcase/compiled/
 examples/showcase/deezul.esm.js
