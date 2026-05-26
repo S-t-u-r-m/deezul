@@ -573,7 +573,8 @@ class Router {
             const newEntry = newChain[i];
 
             if (oldEntry.component !== newEntry.component) return i;
-            if (oldEntry.fullPath !== newEntry.fullPath) return i;
+            // Layouts don't diverge on fullPath — they wrap child routes regardless of path
+            if (!newEntry.isLayout && oldEntry.fullPath !== newEntry.fullPath) return i;
             if (oldEntry.cascadedStyles !== newEntry.cascadedStyles) return i;
         }
 

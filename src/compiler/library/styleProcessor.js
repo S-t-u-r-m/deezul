@@ -306,6 +306,187 @@ export function processStyles(css, options = {}) {
 	};
 }
 
+/**
+ * Extract all element tags, class names, and IDs used in a template AST
+ * Also extracts string literals from dynamic :class expressions
+ *
+ * @param {object} ast - Parsed template AST
+ * @returns {object} { tags: Set, classes: Set, ids: Set }
+ */
+export function extractUsedSelectors(ast) {
+	const tags = new Set();
+	const classes = new Set();
+	const ids = new Set();
+
+	function walk(node) {
+		if (!node) return;
+
+		if (node.type === 'element') {
+			tags.add(node.tag);
+
+			const attrs = node.attributes || {};
+
+			// Static class attribute
+			if (attrs.class) {
+				for (const cls of attrs.class.split(/\s+/)) {
+					if (cls) classes.add(cls);
+				}
+			}
+
+			// Dynamic :class — extract string literals from expression
+			if (attrs[':class']) {
+				const literals = extractStringLiterals(attrs[':class']);
+				for (const lit of literals) {
+					for (const cls of lit.split(/\s+/)) {
+						if (cls) classes.add(cls);
+					}
+				}
+			}
+
+			// Static id attribute
+			if (attrs.id) {
+				ids.add(attrs.id);
+			}
+
+			// Walk children
+			if (node.children) {
+				for (const child of node.children) {
+					walk(child);
+				}
+			}
+		} else if (node.type === 'root') {
+			if (node.children) {
+				for (const child of node.children) {
+					walk(child);
+				}
+			}
+		}
+	}
+
+	walk(ast);
+	return { tags, classes, ids };
+}
+
+/**
+ * Extract string literals from a JavaScript expression
+ * Handles single quotes, double quotes, and template literals
+ *
+ * @param {string} expr - JavaScript expression
+ * @returns {string[]} Array of string literal values
+ */
+function extractStringLiterals(expr) {
+	const literals = [];
+	const regex = /(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|`([^`\\]*(?:\\.[^`\\]*)*)`)/g;
+	let match;
+
+	while ((match = regex.exec(expr)) !== null) {
+		literals.push(match[1] || match[2] || match[3] || '');
+	}
+
+	return literals;
+}
+
+/**
+ * Check if a CSS selector matches any of the used selectors from a template
+ *
+ * @param {object} selectorNode - css-tree Selector node
+ * @param {object} used - { tags, classes, ids }
+ * @returns {boolean}
+ */
+function selectorMatchesUsed(selectorNode, used) {
+	let matches = false;
+
+	csstree.walk(selectorNode, function(node) {
+		switch (node.type) {
+			case 'TypeSelector':
+				if (used.tags.has(node.name)) matches = true;
+				break;
+			case 'ClassSelector':
+				if (used.classes.has(node.name)) matches = true;
+				break;
+			case 'IdSelector':
+				if (used.ids.has(node.name)) matches = true;
+				break;
+			case 'PseudoClassSelector':
+				if (node.name === 'root' || node.name === 'host') matches = true;
+				break;
+			case 'UniversalSelector':
+				matches = true;
+				break;
+		}
+	});
+
+	return matches;
+}
+
+/**
+ * Extract only the CSS rules that match elements/classes/IDs used in a template
+ *
+ * Always includes:
+ * - :root rules (CSS custom properties)
+ * - * (universal) rules
+ * - @keyframes, @font-face, @media (recursively filtered)
+ * - Rules whose selectors reference tags, classes, or IDs found in the template
+ *
+ * @param {string} css - Full shared CSS string
+ * @param {object} used - { tags: Set, classes: Set, ids: Set }
+ * @param {boolean} shouldMinify - Whether to minify the output
+ * @returns {string} Filtered CSS containing only matching rules
+ */
+export function extractMatchingRules(css, used, shouldMinify = true) {
+	const ast = parse(css);
+	const removals = [];
+
+	csstree.walk(ast, {
+		visit: 'Rule',
+		enter(node, item, list) {
+			// Check if any selector in the selector list matches
+			let ruleMatches = false;
+
+			csstree.walk(node.prelude, {
+				visit: 'Selector',
+				enter(selector) {
+					if (selectorMatchesUsed(selector, used)) {
+						ruleMatches = true;
+					}
+				}
+			});
+
+			if (!ruleMatches) {
+				removals.push({ item, list });
+			}
+		}
+	});
+
+	// Remove non-matching rules (reverse to avoid index issues)
+	for (const { item, list } of removals) {
+		list.remove(item);
+	}
+
+	// Remove empty @media blocks
+	const emptyAtRules = [];
+	csstree.walk(ast, {
+		visit: 'Atrule',
+		enter(node, item, list) {
+			if (node.block && node.block.children && node.block.children.isEmpty) {
+				emptyAtRules.push({ item, list });
+			}
+		}
+	});
+
+	for (const { item, list } of emptyAtRules) {
+		list.remove(item);
+	}
+
+	const result = csstree.generate(ast);
+
+	if (shouldMinify && result) {
+		return minify(result);
+	}
+
+	return result;
+}
+
 export default {
 	parse,
 	generate,
@@ -316,5 +497,7 @@ export default {
 	getSelectors,
 	hasShadowSelectors,
 	transformHostSelectors,
-	processStyles
+	processStyles,
+	extractUsedSelectors,
+	extractMatchingRules
 };

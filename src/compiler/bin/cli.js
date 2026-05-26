@@ -34,7 +34,8 @@ function parseArgs(argv) {
 		debug: false,
 		help: false,
 		version: false,
-		extension: '.compiled.js'
+		extension: '.compiled.js',
+		styles: []
 	};
 
 	let i = 2; // Skip node and script path
@@ -53,6 +54,8 @@ function parseArgs(argv) {
 			args.output = argv[++i];
 		} else if (arg === '--ext') {
 			args.extension = argv[++i];
+		} else if (arg === '--styles' || arg === '-s') {
+			args.styles.push(argv[++i]);
 		} else if (!arg.startsWith('-')) {
 			if (!args.input) {
 				args.input = arg;
@@ -85,6 +88,7 @@ Options:
   -w, --watch     Watch for file changes
   -o, --out       Output directory
   -d, --debug     Show debug output
+  -s, --styles    Shared CSS file (can be specified multiple times)
   --ext           Output file extension (default: .compiled.js)
 
 Examples:
@@ -92,6 +96,7 @@ Examples:
   deezul-compile src/counter.html dist/counter.compiled.js
   deezul-compile src/components --out dist/compiled
   deezul-compile --watch src/components --out dist/compiled
+  deezul-compile src/components --out dist/compiled --styles css/theme.css
 `);
 }
 
@@ -99,18 +104,18 @@ Examples:
  * Compile a single file
  */
 async function compileSingleFile(inputPath, outputPath, options = {}) {
-	const { debug } = options;
+	const { debug, sharedStyles = [] } = options;
 
 	try {
 		console.log(`Compiling: ${inputPath}`);
 
-		const compilation = await compileFile(inputPath);
+		const compilation = await compileFile(inputPath, { sharedStyles });
 
 		if (debug) {
 			console.log(dumpCompilation(compilation));
 		}
 
-		const code = await compileFileToCode(inputPath);
+		const code = await compileFileToCode(inputPath, { sharedStyles });
 
 		// Ensure output directory exists
 		const outDir = dirname(outputPath);
@@ -137,7 +142,7 @@ async function compileSingleFile(inputPath, outputPath, options = {}) {
  * Compile all files in a directory
  */
 async function compileDirectory(inputDir, outputDir, options = {}) {
-	const { extension = '.compiled.js', debug } = options;
+	const { extension = '.compiled.js', debug, sharedStyles = [] } = options;
 	const results = [];
 
 	async function processDir(dir, outDir) {
@@ -154,7 +159,7 @@ async function compileDirectory(inputDir, outputDir, options = {}) {
 				const outputName = basename(entry.name, extname(entry.name)) + extension;
 				const outputPath = join(outDir, outputName);
 
-				const result = await compileSingleFile(inputPath, outputPath, { debug });
+				const result = await compileSingleFile(inputPath, outputPath, { debug, sharedStyles });
 				results.push(result);
 			}
 		}
@@ -184,7 +189,7 @@ function getOutputPath(inputPath, outputDir, extension) {
  * Watch mode - recompile on changes
  */
 async function watchMode(inputDir, outputDir, options = {}) {
-	const { extension = '.compiled.js', debug } = options;
+	const { extension = '.compiled.js', debug, sharedStyles = [] } = options;
 
 	console.log(`Watching ${inputDir} for changes...`);
 	console.log(`Output: ${outputDir}`);
@@ -204,7 +209,7 @@ async function watchMode(inputDir, outputDir, options = {}) {
 		if (isTemplateFile(filePath)) {
 			console.log(`\nFile added: ${filePath}`);
 			const outputPath = getOutputPath(filePath, outputDir, extension);
-			await compileSingleFile(filePath, outputPath, { debug });
+			await compileSingleFile(filePath, outputPath, { debug, sharedStyles });
 		}
 	});
 
@@ -213,7 +218,7 @@ async function watchMode(inputDir, outputDir, options = {}) {
 			console.log(`\nFile changed: ${filePath}`);
 			const relPath = relative(inputDir, filePath);
 			const outputPath = join(outputDir, dirname(relPath), basename(relPath, extname(relPath)) + extension);
-			await compileSingleFile(filePath, outputPath, { debug });
+			await compileSingleFile(filePath, outputPath, { debug, sharedStyles });
 		}
 	});
 
@@ -254,6 +259,20 @@ async function main() {
 
 	const inputPath = resolve(args.input);
 
+	// Load shared stylesheets
+	const sharedStyles = [];
+	for (const stylePath of args.styles) {
+		const resolved = resolve(stylePath);
+		try {
+			const css = await readFile(resolved, 'utf-8');
+			sharedStyles.push(css);
+			console.log(`Loaded shared styles: ${stylePath}`);
+		} catch (err) {
+			console.error(`Error loading shared styles ${stylePath}: ${err.message}`);
+			process.exit(1);
+		}
+	}
+
 	try {
 		const inputStat = await stat(inputPath);
 
@@ -263,7 +282,7 @@ async function main() {
 				? resolve(args.output)
 				: inputPath.replace(extname(inputPath), args.extension);
 
-			await compileSingleFile(inputPath, outputPath, { debug: args.debug });
+			await compileSingleFile(inputPath, outputPath, { debug: args.debug, sharedStyles });
 		} else if (inputStat.isDirectory()) {
 			// Directory compilation
 			const outputDir = args.output ? resolve(args.output) : inputPath;
@@ -271,12 +290,14 @@ async function main() {
 			if (args.watch) {
 				await watchMode(inputPath, outputDir, {
 					extension: args.extension,
-					debug: args.debug
+					debug: args.debug,
+					sharedStyles
 				});
 			} else {
 				const results = await compileDirectory(inputPath, outputDir, {
 					extension: args.extension,
-					debug: args.debug
+					debug: args.debug,
+					sharedStyles
 				});
 
 				const success = results.filter(r => r.success).length;

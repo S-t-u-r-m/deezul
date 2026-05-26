@@ -47,6 +47,7 @@ export function createModuleRegistry(name, options = {}) {
     const proxyCache = new Map();  // For data stores - cache proxied instances
     const persistTimers = new Map();  // For debounced localStorage saves
     const waiters = new Map();  // ref -> Set<resolve> for awaiting registration
+    const storeWatchers = new Map();  // ref -> Map<key, Set<callback>>
 
     // ========================================================================
     // Core Registry Methods
@@ -105,8 +106,8 @@ export function createModuleRegistry(name, options = {}) {
             transientModules.add(ref);
         }
 
-        // Restore from localStorage if enabled and has persisted data
-        if (entry.localStorage && !entry.loaded) {
+        // Restore from localStorage if enabled (overrides inline defaults)
+        if (entry.localStorage) {
             const persisted = _loadFromLocalStorage(entry.localStorageKey);
             if (persisted) {
                 entry.module = persisted;
@@ -158,6 +159,29 @@ export function createModuleRegistry(name, options = {}) {
                 }
             );
         }
+    }
+
+    /**
+     * Get a module synchronously if already loaded
+     * For data stores with enableProxy: returns shared proxy
+     * @param {string} ref - Module reference
+     * @returns {any|null} Module content or null if not loaded
+     */
+    function getSync(ref) {
+        if (enableProxy && proxyCache.has(ref)) {
+            return proxyCache.get(ref);
+        }
+
+        const entry = registry.get(ref);
+        if (!entry || !entry.loaded) return null;
+
+        if (enableProxy) {
+            const proxy = _createProxy(entry);
+            proxyCache.set(ref, proxy);
+            return proxy;
+        }
+
+        return entry.module;
     }
 
     /**
@@ -513,14 +537,23 @@ export function createModuleRegistry(name, options = {}) {
      * @returns {Proxy}
      */
     function _createProxy(entry) {
-        // Create proxy with localStorage persistence on set/delete
+        // Create proxy with localStorage persistence and watcher support on set/delete
         const factory = createProxyFactory(new Map([
             [Object, {
                 get: (target, key) => target[key],
                 set: (target, key, value) => {
+                    const oldValue = target[key];
                     target[key] = value;
                     if (entry.localStorage) {
                         _debouncedPersist(entry);
+                    }
+                    // Notify watchers
+                    const watchers = storeWatchers.get(entry.ref);
+                    if (watchers) {
+                        const keyWatchers = watchers.get(key);
+                        if (keyWatchers) {
+                            for (const cb of keyWatchers) cb(value, oldValue);
+                        }
                     }
                     return true;
                 },
@@ -576,6 +609,38 @@ export function createModuleRegistry(name, options = {}) {
     }
 
     // ========================================================================
+    // Store Watchers
+    // ========================================================================
+
+    /**
+     * Watch a store property for changes
+     * @param {string} ref - Store reference name
+     * @param {string} key - Property name to watch
+     * @param {Function} callback - Called with (newValue, oldValue)
+     * @returns {Function} Unwatch function
+     */
+    function watch(ref, key, callback) {
+        if (!storeWatchers.has(ref)) {
+            storeWatchers.set(ref, new Map());
+        }
+        const watchers = storeWatchers.get(ref);
+        if (!watchers.has(key)) {
+            watchers.set(key, new Set());
+        }
+        watchers.get(key).add(callback);
+
+        // Return unwatch function
+        return () => {
+            const keyWatchers = watchers.get(key);
+            if (keyWatchers) {
+                keyWatchers.delete(callback);
+                if (keyWatchers.size === 0) watchers.delete(key);
+            }
+            if (watchers.size === 0) storeWatchers.delete(ref);
+        };
+    }
+
+    // ========================================================================
     // Return Registry Instance
     // ========================================================================
 
@@ -584,6 +649,7 @@ export function createModuleRegistry(name, options = {}) {
         register,
         registerAll,
         get,
+        getSync,
         getCopy: enableProxy ? getCopy : undefined,
         set,
         has,
@@ -602,6 +668,9 @@ export function createModuleRegistry(name, options = {}) {
         persist: enableLocalStorage ? persist : undefined,
         restore: enableLocalStorage ? restore : undefined,
         clearPersisted: enableLocalStorage ? clearPersisted : undefined,
+
+        // Store watchers
+        watch: enableProxy ? watch : undefined,
 
         // Utilities
         getStats,

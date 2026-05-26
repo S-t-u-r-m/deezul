@@ -97,8 +97,21 @@ function encodeBinding(binding, stringTable, evalFunctions, evalMap, eventCounte
 			break;
 
 		case BIND_TYPE.TWO_WAY:
-			// Two-way binding: :bind="value"
-			entry.push(stringTable.indexOf(binding.properties[0]));
+			// Two-way binding: :bind="value" or :bind="form.name"
+			if (binding.isDotted) {
+				// Dotted: pre-compiled accessor stored as an eval entry with {target, key}
+				const dotIdx = binding.expression.lastIndexOf('.');
+				const targetExpr = binding.expression.substring(0, dotIdx);
+				const key = binding.expression.substring(dotIdx + 1);
+				const accessorEntry = { accessor: true, targetExpr, key, properties: binding.properties };
+				const evalIdx = evalFunctions.length;
+				evalFunctions.push(accessorEntry);
+				entry.push(evalIdx);
+				entry.push(1);
+			} else {
+				entry.push(stringTable.indexOf(binding.properties[0]));
+				entry.push(0);
+			}
 			break;
 
 		case BIND_TYPE.EVENT:
@@ -221,8 +234,11 @@ export function decodeBytecodeEntry(bytecode, offset, strings) {
 
 		case BIND_TYPE.TWO_WAY:
 			result.refIdx = bytecode[dataOffset];
-			result.property = strings[result.refIdx];
-			result.length = 2 + pathLen + 1;
+			result.isDotted = bytecode[dataOffset + 1] === 1;
+			if (!result.isDotted) {
+				result.property = strings[result.refIdx];
+			}
+			result.length = 2 + pathLen + 2;
 			break;
 
 		case BIND_TYPE.EVENT:
@@ -304,8 +320,10 @@ export function getBindingCount(bytecode) {
 		let entryLen;
 		switch (type) {
 			case BIND_TYPE.TEXT:
-			case BIND_TYPE.TWO_WAY:
 				entryLen = 2 + pathLen + 1;
+				break;
+			case BIND_TYPE.TWO_WAY:
+				entryLen = 2 + pathLen + 2;
 				break;
 			case BIND_TYPE.TEXT_EVAL: {
 				const depsLen = bytecode[dataOffset + 1];

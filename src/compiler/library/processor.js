@@ -12,26 +12,11 @@
  */
 
 import { BIND_TYPE, DYNAMIC_TYPE, HANDLER_TYPE } from './detector.js';
+import { extractDeps } from './exprWalker.js';
 
 /** Regex patterns */
 const SIMPLE_PATH_REGEX = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 const METHOD_CALL_REGEX = /^([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)$/;
-
-/** Keywords and globals to skip */
-const KEYWORDS = new Set([
-	'true', 'false', 'null', 'undefined', 'this',
-	'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'return',
-	'function', 'var', 'let', 'const', 'class', 'new', 'delete', 'typeof', 'instanceof',
-	'in', 'of', 'try', 'catch', 'finally', 'throw', 'async', 'await', 'yield',
-	'import', 'export', 'default', 'from'
-]);
-
-const GLOBALS = new Set([
-	'Math', 'Date', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
-	'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'console', 'window', 'document',
-	'RegExp', 'Error', 'Promise', 'Set', 'Map', 'WeakSet', 'WeakMap', 'Symbol',
-	'Infinity', 'NaN', 'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent'
-]);
 
 /** Void elements (self-closing) */
 const VOID_ELEMENTS = new Set([
@@ -84,15 +69,14 @@ export function processAST(ast, loopVars) {
 	 */
 	function processNode(node, path = [], pre = false) {
 		if (node.type === 'root') {
+			// Paths are always relative to a container that holds the user's template
+			// children as direct children — the shadow root for the outer template,
+			// the cloned stamp for inner :for/:if templates. No special case for
+			// single-element roots: one convention everywhere keeps the runtime
+			// traversal logic uniform.
 			const children = node.children || [];
-			if (children.length === 1 && children[0].type === 'element') {
-				// Single root element: start with empty path.
-				// Runtime root IS this element, so paths are relative to it.
-				processNode(children[0], [], pre);
-			} else {
-				for (let i = 0; i < children.length; i++) {
-					processNode(children[i], [i], pre);
-				}
+			for (let i = 0; i < children.length; i++) {
+				processNode(children[i], [i], pre);
 			}
 			return;
 		}
@@ -305,16 +289,19 @@ export function processAST(ast, loopVars) {
 			if (name.startsWith(':')) {
 				const attrName = name.slice(1);
 
-				// Two-way binding (:model="prop" on form elements)
-				if (attrName === 'model' && isFormElement(tag)) {
+				// Two-way binding (:bind="prop" on form elements)
+				if (attrName === 'bind' && isFormElement(tag)) {
+					const isDotted = value.indexOf('.') !== -1;
 					const properties = extractPropertyPaths(value);
 					for (const prop of properties) addString(prop);
+					if (!isDotted) addString(value);
 
 					bindings.push({
 						type: BIND_TYPE.TWO_WAY,
 						path,
 						expression: value,
-						properties
+						properties,
+						isDotted
 					});
 					continue;
 				}
@@ -458,26 +445,7 @@ function needsEvalFn(expr) {
 }
 
 function extractPropertyPaths(expr) {
-	const paths = new Set();
-
-	// Remove string literals
-	const noStrings = expr
-		.replace(/'(?:[^'\\]|\\.)*'/g, '""')
-		.replace(/"(?:[^"\\]|\\.)*"/g, '""')
-		.replace(/`(?:[^`\\]|\\.)*`/g, '""');
-
-	const propRegex = /\b([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*|\[[^\]]+\])*)\b/g;
-	let match;
-
-	while ((match = propRegex.exec(noStrings)) !== null) {
-		const path = match[1];
-		if (!KEYWORDS.has(path) && !GLOBALS.has(path)) {
-			const root = path.split(/[.\[]/)[0];
-			paths.add(root);
-		}
-	}
-
-	return Array.from(paths);
+	return extractDeps(expr);
 }
 
 function parseForExpression(expr) {

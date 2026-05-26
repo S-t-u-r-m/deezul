@@ -186,7 +186,35 @@ function getNotFoundInfo() {
 }
 
 /**
- * Get a reactive data store by reference
+ * Get a reactive data store synchronously (must already be registered)
+ * @param {string} ref - Data store reference name
+ * @returns {Proxy|null} Reactive proxy of the data store, or null if not loaded
+ */
+function store(ref) {
+	return dataRegistry.getSync(ref);
+}
+
+/**
+ * Force-persist a data store to localStorage immediately (bypasses debounce)
+ * @param {string} ref - Data store reference name
+ */
+function persistStore(ref) {
+	dataRegistry.persist(ref);
+}
+
+/**
+ * Watch a store property for changes
+ * @param {string} ref - Store reference name
+ * @param {string} key - Property name to watch
+ * @param {Function} callback - Called with (newValue, oldValue)
+ * @returns {Function} Unwatch function
+ */
+function watchStore(ref, key, callback) {
+	return dataRegistry.watch(ref, key, callback);
+}
+
+/**
+ * Get a reactive data store by reference (async, waits for lazy-loaded stores)
  * @param {string} ref - Data store reference name
  * @returns {Promise<Proxy>} Reactive proxy of the data store
  */
@@ -252,6 +280,9 @@ const Deezul = {
 	getRouter,
 
 	// Data store access
+	store,
+	persistStore,
+	watchStore,
 	getDataStore,
 	cloneStore,
 
@@ -285,4 +316,4 @@ if (typeof window !== 'undefined') window.Deezul = Deezul;
 else if (typeof globalThis !== 'undefined') globalThis.Deezul = Deezul;
 
 export default Deezul;
-export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, getDataStore, cloneStore, createComponent, isInitialized, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };
+export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, cloneStore, createComponent, isInitialized, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };

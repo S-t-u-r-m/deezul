@@ -1,88 +1,213 @@
-// --- Symbols for proxy metadata ---
+/**
+ * DataProxy.js - Reactive Proxy + Change Chain
+ *
+ * Design:
+ *
+ * 1. Equality pre-check lives in the proxy's set trap. Type handlers are
+ *    not called for redundant assignments (`proxy.x = proxy.x`, primitive
+ *    set to same value, proxy-wrapped re-assignment of the same target).
+ *
+ * 2. The proxy owns a deduplicating change chain.
+ *    Property changes accumulate in `Map<rawTarget, Map<key, {oldValue, value}>>`
+ *    keyed for O(1) coalescing: repeated writes to the same (target, key)
+ *    keep the original oldValue and overwrite to the latest value.
+ *    Collection mutations (push/splice/Map.set/...) accumulate in an ordered
+ *    list — deduplication is unsafe for :for reconciliation.
+ *
+ * 3. Auto-batched flush via queueMicrotask.
+ *    The first change in a synchronous turn schedules a microtask flush;
+ *    every subsequent change in the same turn lands in the same chain.
+ *    No developer involvement, no entry-point wrapping. Runs once per
+ *    user trigger (click, method call, async resumption — each is a microtask).
+ *
+ * 4. Pruning at flush. Entries whose value === oldValue after coalescing
+ *    are dropped — a "set, then set back" sequence collapses to a no-op.
+ *
+ * Reactivity.js registers application logic via setFlushHandlers() once
+ * at module init. DataProxy stays oblivious to bindings, computed, watchers,
+ * and DOM — it only owns the chain.
+ */
+
+import { isObject } from './helpers.js';
+
+// ============================================================================
+// SYMBOLS
+// ============================================================================
+
 export const IS_PROXY = Symbol('isProxy');
 export const TARGET = Symbol('target');
 export const PARENT_PROXY = Symbol('parentProxy');
 export const PARENT_KEY = Symbol('parentKey');
 
-// --- Symbols for rebinding support ---
 export const REBINDABLE = Symbol('rebindable');
 export const REBIND = Symbol('rebind');
 
+// ============================================================================
+// CHANGE CHAIN
+// ============================================================================
+
 /**
- * DataProxy2.js - Minimal Reactive Proxy
+ * Property change chain — deduplicating per (target, key).
  *
- * Ultra-thin proxy layer - intercepts and delegates to type-specific callbacks.
- * ALL logic lives in callbacks (ReactivityBridge), not here.
- *
- * The proxy only:
- * - Type-checks once at creation to select appropriate handlers
- * - Handles symbol access for metadata (IS_PROXY, TARGET, etc.)
- * - Delegates get/set/delete to the type-specific callbacks
- *
- * Symbols exported for external use:
- * - IS_PROXY: Check if object is already a proxy
- * - TARGET: Get raw target object from proxy
- * - PARENT_PROXY: Get parent proxy reference (for nested objects)
- * - PARENT_KEY: Get key name on parent (for building paths)
+ *   Map<rawTarget, Map<key, { oldValue, value }>>
  */
-
-import { isObject } from './helpers.js';
+let changeChain = new Map();
 
 /**
- * Creates a proxy factory with handlers captured in closure.
- * Returns an object with a createProxy method and access to the cache.
+ * Collection mutation log — ordered, no deduplication.
  *
- * @param {Map} handlers - Map of constructors to handler objects
- * Keys: Constructor functions (Array, Map, Date, Object, etc.)
- * Values: { get, set, delete } handler objects
- * Unknown constructors will fall back to the Object handler
+ *   Array<{ target, type, meta, proxyInstance }>
+ */
+let mutationLog = [];
+
+let flushScheduled = false;
+let flushHandlers = null;
+
+/**
+ * Reactivity.js registers flush behavior here once at module init.
  *
- * @example
- * const handlers = new Map([
- *   [Array, { get: ..., set: ..., delete: ... }],
- *   [Map, { get: ..., set: ..., delete: ... }],
- *   [Date, { get: ..., set: ..., delete: ... }],
- *   [MyClass, { get: ..., set: ..., delete: ... }],
- *   [Object, { get: ..., set: ..., delete: ... }]  // Fallback for plain objects
- * ]);
+ * @param {object} handlers
+ *   @param {(target, propertyMap) => void} handlers.applyChanges
+ *     Invoked once per target with that target's deduplicated, no-op-pruned
+ *     Map<key, {oldValue, value}>.
+ *   @param {(target, type, meta, proxyInstance) => void} handlers.applyMutation
+ *     Invoked once per mutation entry, in original insertion order.
+ *   @param {(localChain, localMutations) => void} [handlers.afterFlush]
+ *     Optional hook fired after all changes & mutations apply
+ *     (used for $updated lifecycle callbacks).
+ */
+export function setFlushHandlers(handlers) {
+    flushHandlers = handlers;
+}
+
+/**
+ * Optional hook fired the first time a proxy is created for a target.
+ * Receives the raw target and its parent's raw target (or null for the root).
  *
- * @returns {object} Factory object: { createProxy, cache }
+ * Reactivity.js uses this to propagate ComputedManager registration from a
+ * parent target down to nested targets. Without it, a change deep in the
+ * data tree (e.g., `state.user.name = 'Bob'`) wouldn't find its manager —
+ * `getManager(userTarget)` would miss the manager registered on `state`.
+ */
+let onProxyCreated = null;
+
+export function setOnProxyCreated(hook) {
+    onProxyCreated = hook;
+}
+
+/**
+ * Record a property change. Called by handlers AFTER mutating the target.
+ * The proxy's set trap is responsible for the equality pre-check, so by the
+ * time this runs we already know `oldValue !== value` (modulo the no-op
+ * prune at flush time, which catches the set-then-set-back case).
+ *
+ * @param {boolean} [force=false]
+ *   Bypass the value === oldValue prune at flush. Used by handlers that
+ *   reuse a reference but mutate contents (e.g., array reassignment that
+ *   reconciles in place — the parent property still needs its bindings
+ *   fired even though the array reference is unchanged).
+ */
+export function recordChange(target, key, oldValue, value, force = false) {
+    let propertyMap = changeChain.get(target);
+    if (!propertyMap) {
+        propertyMap = new Map();
+        changeChain.set(target, propertyMap);
+    }
+    const existing = propertyMap.get(key);
+    if (existing) {
+        existing.value = value;
+        if (force) existing.force = true;
+    } else {
+        propertyMap.set(key, { oldValue, value, force });
+    }
+    if (!flushScheduled) {
+        flushScheduled = true;
+        queueMicrotask(flush);
+    }
+}
+
+/**
+ * Record a collection mutation (push/splice/Map.set/Set.add/Date.setX/...).
+ * Mutations are not deduplicated — push+pop is not a no-op for forLoop
+ * reconciliation, and order matters for in-place updates.
+ */
+export function recordMutation(target, type, meta, proxyInstance) {
+    mutationLog.push({ target, type, meta, proxyInstance });
+    if (!flushScheduled) {
+        flushScheduled = true;
+        queueMicrotask(flush);
+    }
+}
+
+/**
+ * Force a synchronous flush. Useful for tests, teardown, and any caller
+ * that needs the DOM to reflect pending changes before the microtask runs.
+ */
+export function flushSync() {
+    if (flushScheduled) flush();
+}
+
+function flush() {
+    // Snapshot and reset BEFORE applying. Re-entrant changes (a watcher that
+    // mutates) populate a fresh chain that flushes on the next microtask.
+    const localChain = changeChain;
+    const localMutations = mutationLog;
+    changeChain = new Map();
+    mutationLog = [];
+    flushScheduled = false;
+
+    if (!flushHandlers) return;
+
+    const { applyChanges, applyMutation, afterFlush } = flushHandlers;
+
+    // Phase A: replay collection mutations in original order.
+    if (applyMutation) {
+        for (let i = 0, len = localMutations.length; i < len; i++) {
+            const m = localMutations[i];
+            applyMutation(m.target, m.type, m.meta, m.proxyInstance);
+        }
+    }
+
+    // Phase B: apply property changes per-target. Coalesced no-ops
+    // (entry.value === entry.oldValue without `force`) are skipped inline
+    // by the consumer's apply pass.
+    if (applyChanges) {
+        for (const [target, propertyMap] of localChain) {
+            applyChanges(target, propertyMap);
+        }
+    }
+
+    // Phase C: post-flush hook (e.g., $updated lifecycle callbacks).
+    if (afterFlush) afterFlush(localChain, localMutations);
+}
+
+// ============================================================================
+// PROXY FACTORY
+// ============================================================================
+
+/**
+ * Creates a proxy factory with type-specific handlers captured in closure.
+ *
+ * @param {Map<Function, {get, set, delete}>} handlers
+ *   Keys are constructors (Array, Map, Set, Date, Object, ...).
+ *   Unknown constructors fall back to the Object handler.
+ *
+ * @returns {{ createProxy: Function, cache: WeakMap }}
  */
 export function createProxyFactory(handlers) {
-    // Cache scoped to this factory instance
     const proxyCache = new WeakMap();
 
-    /**
-     * Creates a reactive proxy for an object.
-     *
-     * @param {object} obj - The object to proxy
-     * @param {Proxy} [parentProxy] - Parent proxy reference (for nested objects)
-     * @param {string} [parentKey] - Key name on parent
-     * @returns {Proxy} Reactive proxy
-     */
     function createProxy(obj, parentProxy = null, parentKey = null) {
-        // Return cached proxy if exists (prevents infinite loops on circular refs)
-        if (proxyCache.has(obj)) {
-            return proxyCache.get(obj);
-        }
-
-        if (obj[IS_PROXY]) {
-            return obj;
-        }
-
+        const cached = proxyCache.get(obj);
+        if (cached) return cached;
+        if (obj[IS_PROXY]) return obj;
         if (!isObject(obj)) {
             throw new Error('createProxy requires an object or collection');
         }
 
-        // O(1) lookup by constructor
         const ctor = obj.constructor;
         let typeHandler = handlers.get(ctor);
-
-        // Fallback to Object handler for unknown types
-        if (!typeHandler) {
-            typeHandler = handlers.get(Object);
-        }
-
+        if (!typeHandler) typeHandler = handlers.get(Object);
         if (!typeHandler) {
             throw new Error(`No handler found for constructor: ${ctor.name} (and no Object fallback handler)`);
         }
@@ -90,7 +215,6 @@ export function createProxyFactory(handlers) {
         let proxyInstance = null;
         let cachedRebindFn = null;
 
-        // Wrapper has closure access to handlers, delegates to type-specific handler
         const handler = {
             get(target, key) {
                 if (typeof key === 'symbol') {
@@ -112,10 +236,8 @@ export function createProxyFactory(handlers) {
                     return target[key];
                 }
 
-                // Call handler to get the value
                 const value = typeHandler.get(target, key, proxyInstance);
 
-                // Centralized wrapping: if value is an object and not already a proxy, wrap it
                 if (isObject(value) && !value[IS_PROXY]) {
                     return createProxy(value, proxyInstance, String(key));
                 }
@@ -123,7 +245,21 @@ export function createProxyFactory(handlers) {
                 return value;
             },
             set(target, key, value) {
-                return typeHandler.set(target, key, value, proxyInstance);
+                // Pre-check #1: identity equality (primitives, same reference).
+                const oldValue = target[key];
+                if (oldValue === value) return true;
+
+                // Pre-check #2: proxy-wrapped re-assignment of the same target.
+                // Catches `proxy.x = proxy.x` where the get trap returned a wrapped
+                // child proxy. value[TARGET] returns the raw target for a proxy,
+                // undefined otherwise.
+                if (value !== null && typeof value === 'object' && value[TARGET] === oldValue) {
+                    return true;
+                }
+
+                // Real change — delegate to the type-specific handler.
+                // oldValue is forwarded so the handler doesn't have to read it again.
+                return typeHandler.set(target, key, value, proxyInstance, oldValue);
             },
             deleteProperty(target, key) {
                 return typeHandler.delete(target, key, proxyInstance);
@@ -133,11 +269,13 @@ export function createProxyFactory(handlers) {
         proxyInstance = new Proxy(obj, handler);
         proxyCache.set(obj, proxyInstance);
 
+        if (onProxyCreated) {
+            const parentTarget = parentProxy ? parentProxy[TARGET] : null;
+            onProxyCreated(obj, parentTarget);
+        }
+
         return proxyInstance;
     }
 
-    return {
-        createProxy,
-        cache: proxyCache
-    };
+    return { createProxy, cache: proxyCache };
 }

@@ -40,7 +40,25 @@ export const BindingType = {
 
 // Defined once, shared across all bindings of each type (avoids per-binding closure allocation)
 export function applyText(value, b) { b.node.textContent = value; }
-export function applyAttr(value, b) { b.node.setAttribute(b.attributeName, value); }
+export function resolveDottedPath(obj, path) {
+    if (!path || path.indexOf('.') === -1) return obj ? obj[path] : undefined;
+    const parts = path.split('.');
+    let v = obj;
+    for (let i = 0; i < parts.length && v != null; i++) v = v[parts[i]];
+    return v;
+}
+export function setAttrMerged(node, attr, value) {
+    if (attr === 'class') {
+        if (node._staticClass === undefined) {
+            node._staticClass = node.getAttribute('class') || '';
+        }
+        const dyn = value == null || value === false ? '' : String(value);
+        node.setAttribute('class', node._staticClass + (dyn && node._staticClass ? ' ' : '') + dyn);
+    } else {
+        node.setAttribute(attr, value);
+    }
+}
+export function applyAttr(value, b) { setAttrMerged(b.node, b.attributeName, value); }
 export function applyBoolAttr(value, b) {
     if (value) b.node.setAttribute(b.attributeName, '');
     else b.node.removeAttribute(b.attributeName);
@@ -81,6 +99,7 @@ export function getBindingDataLength(type) {
 		case BindingType.EVENT:
 		case BindingType.PROP:
 		case BindingType.PROP_SYNC:
+		case BindingType.TWO_WAY:
 			return 2;
 		default:
 			return 1;

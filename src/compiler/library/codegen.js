@@ -16,6 +16,7 @@
  */
 
 import { BIND_TYPE, HANDLER_TYPE } from './detector.js';
+import { transformExpression } from './exprWalker.js';
 
 /**
  * Generate compiled component code
@@ -248,8 +249,14 @@ function generateEvalArray(evalFunctions, loopVars) {
 	const skipSet = loopVars ? new Set(loopVars) : null;
 	const params = loopVars ? loopVars.join(', ') : '';
 
-	const lines = evalFunctions.map(({ expression }) => {
-		const transformed = transformExpression(expression, skipSet);
+	const lines = evalFunctions.map((entry) => {
+		if (entry && entry.accessor) {
+			// Pre-compiled accessor for dotted :bind — returns the parent object via getter,
+			// paired with a static key. Runtime reads/writes via target().key = value.
+			const transformedTarget = transformExpression(entry.targetExpr, skipSet);
+			return `\t\t{ target: function() { return ${transformedTarget}; }, key: ${JSON.stringify(entry.key)} }`;
+		}
+		const transformed = transformExpression(entry.expression, skipSet);
 		return loopVars
 			? `\t\tfunction(${params}) { return ${transformed}; }`
 			: `\t\tfunction() { return ${transformed}; }`;
@@ -319,6 +326,15 @@ function generateForDynamic(dynamic) {
 	lines.push(`\t\t\tmarkerIndex: ${dynamic.markerIndex},`);
 	lines.push(`\t\t\tmarkerPath: ${JSON.stringify(dynamic.markerPath)},`);
 	lines.push(`\t\t\tsource: ${JSON.stringify(dynamic.source)},`);
+	// Pre-compiled accessor + base dep for reactive source tracking.
+	// Runtime calls sourceFn.call(proxy) to resolve the collection — no string parsing.
+	const sourceExpr = dynamic.source.startsWith('this.') ? dynamic.source : `this.${dynamic.source}`;
+	const baseMatch = dynamic.source.replace(/^this\./, '').match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/);
+	const sourceBase = baseMatch ? baseMatch[1] : null;
+	lines.push(`\t\t\tsourceFn: function() { return ${sourceExpr}; },`);
+	if (sourceBase) {
+		lines.push(`\t\t\tsourceBase: ${JSON.stringify(sourceBase)},`);
+	}
 	lines.push(`\t\t\titerator: ${JSON.stringify(dynamic.iteratorVar)},`);
 
 	if (dynamic.indexVar) {
@@ -347,7 +363,11 @@ function generateForDynamic(dynamic) {
 }
 
 /**
- * Generate conditional dynamic block
+ * Generate conditional dynamic block.
+ * Each unique condition expression is compiled once into a shared `condEvals` array;
+ * chain items reference it by `condIdx`. `:else` has no `condIdx`.
+ * `deps` is the union of identifiers referenced across all conditions in the chain,
+ * used by the runtime to wire reactivity (callers apply their own filtering).
  */
 function generateConditionalDynamic(dynamic) {
 	const lines = ['\t\t{'];
@@ -355,12 +375,43 @@ function generateConditionalDynamic(dynamic) {
 	lines.push(`\t\t\tmarkerIndex: ${dynamic.markerIndex},`);
 	lines.push(`\t\t\tmarkerPath: ${JSON.stringify(dynamic.markerPath)},`);
 
-	// Chain items (if/else-if/else)
-	const chainCode = dynamic.chain.map((item) => {
+	// Pass 1: dedupe condition expressions, extract deps
+	const condBodies = [];
+	const condIndexByExpr = new Map();
+	const depSet = new Set();
+	const itemCondIdx = new Array(dynamic.chain.length);
+
+	for (let i = 0; i < dynamic.chain.length; i++) {
+		const item = dynamic.chain[i];
+		if (item.condition === undefined) {
+			itemCondIdx[i] = -1; // :else
+			continue;
+		}
+		const transformed = transformExpression(item.condition, undefined, depSet);
+		let idx = condIndexByExpr.get(transformed);
+		if (idx === undefined) {
+			idx = condBodies.length;
+			condBodies.push(transformed);
+			condIndexByExpr.set(transformed, idx);
+		}
+		itemCondIdx[i] = idx;
+	}
+
+	// condEvals: shared function table for this conditional
+	if (condBodies.length > 0) {
+		const condEvalLines = condBodies.map(body => `\t\tfunction() { return ${body}; }`);
+		lines.push(`\t\t\tcondEvals: [\n${condEvalLines.join(',\n')}\n\t\t\t],`);
+	} else {
+		lines.push(`\t\t\tcondEvals: [],`);
+	}
+	lines.push(`\t\t\tdeps: ${JSON.stringify(Array.from(depSet))},`);
+
+	// Pass 2: chain items
+	const chainCode = dynamic.chain.map((item, i) => {
 		const itemLines = ['\t\t\t\t{'];
 
-		if (item.condition !== undefined) {
-			itemLines.push(`\t\t\t\t\tcondition: ${JSON.stringify(item.condition)},`);
+		if (itemCondIdx[i] !== -1) {
+			itemLines.push(`\t\t\t\t\tcondIdx: ${itemCondIdx[i]},`);
 		}
 
 		if (item.compiled) {
@@ -431,112 +482,6 @@ function generateRefsArray(refs) {
 	});
 
 	return `[\n${items.join(',\n')}\n\t]`;
-}
-
-/**
- * Transform expression to access properties through `this`
- * Properties like `count` become `this.count`
- * This allows access to data, computed, and methods
- */
-function transformExpression(expression, skipVars) {
-	const keywords = new Set([
-		'true', 'false', 'null', 'undefined', 'this',
-		'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'return',
-		'function', 'var', 'let', 'const', 'class', 'new', 'delete', 'typeof', 'instanceof',
-		'in', 'of', 'try', 'catch', 'finally', 'throw', 'async', 'await', 'yield',
-		'import', 'export', 'default', 'from', 'void'
-	]);
-
-	const globals = new Set([
-		'Math', 'Date', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
-		'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'console', 'window', 'document',
-		'RegExp', 'Error', 'Promise', 'Set', 'Map', 'WeakSet', 'WeakMap', 'Symbol',
-		'Infinity', 'NaN', 'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
-		'$event' // Event object in inline handlers
-	]);
-
-	let result = '';
-	let i = 0;
-
-	while (i < expression.length) {
-		const char = expression[i];
-
-		// Handle string literals
-		if (char === '"' || char === "'" || char === '`') {
-			const quote = char;
-			result += char;
-			i++;
-
-			while (i < expression.length) {
-				const c = expression[i];
-				result += c;
-				if (c === quote && expression[i - 1] !== '\\') {
-					i++;
-					break;
-				}
-				i++;
-			}
-			continue;
-		}
-
-		// Handle identifiers
-		if (isIdentifierStart(char)) {
-			let identifier = '';
-
-			while (i < expression.length && isIdentifierChar(expression[i])) {
-				identifier += expression[i];
-				i++;
-			}
-
-			// Check if this is after a dot (property access)
-			const beforeIdent = result.trimEnd();
-			const isAfterDot = beforeIdent.endsWith('.');
-
-			if (isAfterDot) {
-				// Already accessing a property, don't prefix
-				result += identifier;
-			} else if (keywords.has(identifier)) {
-				// JS keyword, don't prefix
-				result += identifier;
-			} else if (globals.has(identifier)) {
-				// Global object, don't prefix
-				result += identifier;
-			} else if (skipVars && skipVars.has(identifier)) {
-				// Loop variable passed as function parameter, don't prefix
-				result += identifier;
-			} else {
-				// Component property - prefix with this.
-				result += 'this.' + identifier;
-			}
-			continue;
-		}
-
-		// Handle numbers
-		if (isDigit(char)) {
-			while (i < expression.length && (isDigit(expression[i]) || expression[i] === '.')) {
-				result += expression[i];
-				i++;
-			}
-			continue;
-		}
-
-		result += char;
-		i++;
-	}
-
-	return result;
-}
-
-function isIdentifierStart(char) {
-	return /[a-zA-Z_$]/.test(char);
-}
-
-function isIdentifierChar(char) {
-	return /[a-zA-Z0-9_$]/.test(char);
-}
-
-function isDigit(char) {
-	return /[0-9]/.test(char);
 }
 
 /**

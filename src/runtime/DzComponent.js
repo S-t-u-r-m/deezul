@@ -10,12 +10,13 @@
 
 import { componentRegistry } from './registries.js';
 import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback } from './Reactivity.js';
+import { forLoopReconcile } from './render.js';
 import { renderForLoop, renderConditional, updateConditional } from './render.js';
 import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
 import { handleComponentError, clearErrorState, hasError } from './ErrorBoundary.js';
 import { renderStylesIntoShadow } from './StyleSystem.js';
 import { renderLoading } from './LibraryComponents.js';
-import { BindingType, getNodeByPath, getBindingDataLength, applyText, applyAttr, applyBoolAttr, applyValue } from './constants.js';
+import { BindingType, getNodeByPath, getBindingDataLength, applyText, applyAttr, applyBoolAttr, applyValue, setAttrMerged, resolveDottedPath } from './constants.js';
 import { createLogger } from './Logger.js';
 
 const logger = createLogger('DzComponent');
@@ -355,11 +356,19 @@ class DzComponent extends HTMLElement {
 		// Step 4: Clear loading state
 		this.shadowRoot.innerHTML = '';
 
-		// Step 4.5: Parse template into temporary container
-		const container = document.createElement('div');
-		container.innerHTML = def.template;
+		// Step 4.5: Parse template and move children into the shadow root. The shadow
+		// root is the natural container — the host <dz-component> element already wraps
+		// it — so we don't introduce an artificial wrapper element. Paths emitted by
+		// the compiler are sibling-indexed against this root, whether the user's
+		// template has one top-level element or many.
+		const tpl = document.createElement('template');
+		tpl.innerHTML = def.template;
+		this.shadowRoot.append(tpl.content);
 
-		// Step 4.7: Inject styles via StyleSystem (order: slot → cascaded → component)
+		// Step 4.7: Inject styles via StyleSystem (order: slot → cascaded → component).
+		// Appended after template content; CSS cascade is determined by source order
+		// among the <style> elements themselves, not their position relative to other
+		// shadow-tree nodes, so this is safe and keeps template paths starting at index 0.
 		renderStylesIntoShadow(
 			this.shadowRoot,
 			this._slotStyles || null,
@@ -367,12 +376,7 @@ class DzComponent extends HTMLElement {
 			def.style || null
 		);
 
-		// Step 5: Move template nodes to shadow root
-		const templateRoot = container.firstElementChild || container.firstChild;
-		while (container.firstChild) {
-			this.shadowRoot.appendChild(container.firstChild);
-		}
-		this.component.root = templateRoot;
+		this.component.root = this.shadowRoot;
 
 		// Step 6: Apply bindings (initial render)
 		// Variable-length bytecode: [type, pathLen, ...path, ...data]
@@ -467,7 +471,7 @@ class DzComponent extends HTMLElement {
 								if (value) bindNode.setAttribute(attr, '');
 								else bindNode.removeAttribute(attr);
 							} else {
-								bindNode.setAttribute(attr, value);
+								setAttrMerged(bindNode, attr, value);
 							}
 							addBinding(this.component.proxy, prop, bindNode, {
 								type: 'attr',
@@ -519,7 +523,7 @@ class DzComponent extends HTMLElement {
 								if (evalValue) bindNode.setAttribute(attr, '');
 								else bindNode.removeAttribute(attr);
 							} else {
-								bindNode.setAttribute(attr, evalValue);
+								setAttrMerged(bindNode, attr, evalValue);
 							}
 							for (let i = 0; i < depsLen; i++) {
 								const depIdx = code[dataOffset + 3 + i];
@@ -534,7 +538,7 @@ class DzComponent extends HTMLElement {
 											if (v) b.node.setAttribute(b.attributeName, '');
 											else b.node.removeAttribute(b.attributeName);
 										}
-										: (_, b) => { b.node.setAttribute(b.attributeName, b.evalFn.call(this.component.proxy)); }
+										: (_, b) => { setAttrMerged(b.node, b.attributeName, b.evalFn.call(this.component.proxy)); }
 								});
 							}
 						}
@@ -542,19 +546,31 @@ class DzComponent extends HTMLElement {
 						break;
 					}
 					case BindingType.TWO_WAY: {
-						const propIdx = code[dataOffset];
-						const prop = strings[propIdx];
-						bindNode.value = this.component.proxy[prop];
+						const refIdx = code[dataOffset];
+						const isDotted = code[dataOffset + 1] === 1;
+						const proxy = this.component.proxy;
+						let bindTarget, bindKey;
 
-						bindNode.addEventListener('input', (e) => {
-							this.component.proxy[prop] = e.target.value;
+						if (isDotted) {
+							const accessor = this.component.eval[refIdx];
+							bindTarget = accessor.target.call(proxy);
+							bindKey = accessor.key;
+						} else {
+							bindTarget = proxy;
+							bindKey = strings[refIdx];
+						}
+
+						bindNode.value = bindTarget[bindKey];
+						const eventName = (bindNode.tagName === 'SELECT' || bindNode.type === 'checkbox' || bindNode.type === 'radio') ? 'change' : 'input';
+						bindNode.addEventListener(eventName, (e) => {
+							bindTarget[bindKey] = e.target.value;
 						});
 
-						addBinding(this.component.proxy, prop, bindNode, {
+						addBinding(bindTarget, bindKey, bindNode, {
 							type: 'two-way',
 							applyFn: applyValue
 						});
-						entryLen = 2 + pathLen + 1;
+						entryLen = 2 + pathLen + 2;
 						break;
 					}
 					case BindingType.EVENT: {
@@ -688,6 +704,9 @@ class DzComponent extends HTMLElement {
 			anchors[i] = mp ? getNodeByPath(this.component.root, mp) : null;
 		}
 
+		// Built lazily on first :if encounter — most components have no :if blocks.
+		let dataKeySet = null;
+
 		for (let r = 0; r < len; r++) {
 			const dynamic = dynamics[r];
 			const anchor = anchors[r];
@@ -697,8 +716,11 @@ class DzComponent extends HTMLElement {
 			}
 
 			if (dynamic.type === 'for') {
-				// Get source collection from proxy
-				const collection = this.component.proxy[dynamic.source];
+				// Resolve source collection via pre-compiled accessor (preferred) or dotted-path fallback
+				const resolveSource = dynamic.sourceFn
+					? () => dynamic.sourceFn.call(this.component.proxy)
+					: () => resolveDottedPath(this.component.proxy, dynamic.source);
+				const collection = resolveSource();
 				if (collection) {
 					const structure = {
 						...dynamic,
@@ -706,8 +728,18 @@ class DzComponent extends HTMLElement {
 						anchor,
 						parentProxy: this.component.proxy
 					};
+					structure.updateFn = () => {
+						const newCollection = resolveSource();
+						if (Array.isArray(newCollection)) forLoopReconcile(structure, newCollection);
+					};
 					renderForLoop(structure, collection, this.component.proxy, anchor);
 					this.component.dynamics.push(structure);
+					// Track reassignments on source base property
+					const baseProp = dynamic.sourceBase
+						|| (dynamic.source && dynamic.source.indexOf('.') !== -1 ? dynamic.source.substring(0, dynamic.source.indexOf('.')) : null);
+					if (baseProp) {
+						addDynamicStructure(this.component.data, baseProp, structure);
+					}
 				}
 			} else if (dynamic.type === 'if') {
 				const structure = {
@@ -721,24 +753,15 @@ class DzComponent extends HTMLElement {
 				renderConditional(structure, this.component.proxy, anchor);
 				this.component.dynamics.push(structure);
 
-				// Register with reactivity for each property used in conditions
-				const deps = new Set();
-				const chainItems = structure.chain;
-				const dataKeySet = new Set(Object.keys(this.component.data));
-				for (let j = 0, cLen = chainItems.length; j < cLen; j++) {
-					if (chainItems[j].condition) {
-						const identifiers = chainItems[j].condition.match(/[a-zA-Z_$][a-zA-Z0-9_$]*/g);
-						if (identifiers) {
-							for (let k = 0, kLen = identifiers.length; k < kLen; k++) {
-								if (dataKeySet.has(identifiers[k])) {
-									deps.add(identifiers[k]);
-								}
-							}
-						}
+				// Register with reactivity for each data-side identifier used in any
+				// condition (compiler pre-extracted the union into structure.deps).
+				// dataKeySet is hoisted across all :if structures in this component.
+				if (!dataKeySet) dataKeySet = new Set(Object.keys(this.component.data));
+				const ids = structure.deps || [];
+				for (let k = 0, kLen = ids.length; k < kLen; k++) {
+					if (dataKeySet.has(ids[k])) {
+						addDynamicStructure(this.component.proxy, ids[k], structure);
 					}
-				}
-				for (const dep of deps) {
-					addDynamicStructure(this.component.proxy, dep, structure);
 				}
 			}
 		}

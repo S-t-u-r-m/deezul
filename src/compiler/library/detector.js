@@ -18,6 +18,7 @@
  */
 
 import { walkAST } from './parser.js';
+import { extractDeps } from './exprWalker.js';
 
 /**
  * Binding type constants - reactive bindings for Uint16Array bytecode
@@ -89,62 +90,12 @@ function needsEvalFn(expr) {
 }
 
 /**
- * Extract property paths from an expression
- * Returns all standalone property references (skipping string literals)
+ * Extract reactive property names referenced by an expression.
+ * Thin wrapper around the shared tokeniser in exprWalker — kept under its old name
+ * (`extractPropertyPaths`) so the existing callsites read unchanged.
  */
 function extractPropertyPaths(expr) {
-	const paths = new Set();
-
-	// First, remove string literals to avoid matching identifiers inside them
-	// Replace 'string', "string", and `template` with empty placeholders
-	const noStrings = expr
-		.replace(/'(?:[^'\\]|\\.)*'/g, '""')
-		.replace(/"(?:[^"\\]|\\.)*"/g, '""')
-		.replace(/`(?:[^`\\]|\\.)*`/g, '""');
-
-	// Match property access patterns
-	// Matches: identifier, identifier.path, identifier[index]
-	const propRegex = /\b([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*|\[[^\]]+\])*)\b/g;
-	let match;
-
-	while ((match = propRegex.exec(noStrings)) !== null) {
-		const path = match[1];
-		// Skip keywords and globals
-		if (!isKeyword(path) && !isGlobal(path)) {
-			// Get root property (first segment)
-			const root = path.split(/[.\[]/)[0];
-			paths.add(root);
-		}
-	}
-
-	return Array.from(paths);
-}
-
-/**
- * Check if identifier is a global object (shouldn't be tracked as reactive)
- */
-function isGlobal(str) {
-	const globals = new Set([
-		'Math', 'Date', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
-		'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'console', 'window', 'document',
-		'RegExp', 'Error', 'Promise', 'Set', 'Map', 'WeakSet', 'WeakMap', 'Symbol',
-		'Infinity', 'NaN', 'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent'
-	]);
-	return globals.has(str);
-}
-
-/**
- * Check if a string is a JavaScript keyword
- */
-function isKeyword(str) {
-	const keywords = new Set([
-		'true', 'false', 'null', 'undefined', 'this',
-		'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'return',
-		'function', 'var', 'let', 'const', 'class', 'new', 'delete', 'typeof', 'instanceof',
-		'in', 'of', 'try', 'catch', 'finally', 'throw', 'async', 'await', 'yield',
-		'import', 'export', 'default', 'from'
-	]);
-	return keywords.has(str);
+	return extractDeps(expr);
 }
 
 /**
@@ -433,7 +384,8 @@ function detectElementBindings(node, path, bindings, dynamics) {
 					path,
 					position: node.start,
 					expression: value,
-					properties: extractPropertyPaths(value)
+					properties: extractPropertyPaths(value),
+					isDotted: value.indexOf('.') !== -1
 				});
 				continue;
 			}

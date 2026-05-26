@@ -21,7 +21,7 @@ const directiveRegistry = new Map();
 
 // Reserved names that cannot be used as directives
 const RESERVED_NAMES = new Set([
-	'for', 'if', 'else-if', 'else', 'bind', 'ref', 'model', 'slot'
+	'for', 'if', 'else-if', 'else', 'bind', 'ref', 'slot'
 ]);
 
 /**

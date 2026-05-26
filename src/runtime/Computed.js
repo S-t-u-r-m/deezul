@@ -124,6 +124,16 @@ export class ComputedManager {
 
 		/** @type {Map<string, { callback: Function, oldValue: * }>} */
 		this.watchers = new Map();
+
+		/**
+		 * Reverse dependency index: (target, key) → Set<computedName>
+		 * Lets `invalidate` and the cascade do O(1) lookups instead of an
+		 * O(N) scan over every computed in this manager. Maintained by
+		 * `_updateDepIndex` after each successful evaluate.
+		 *
+		 * @type {Map<Object, Map<string, Set<string>>>}
+		 */
+		this.depIndex = new Map();
 	}
 
 	// ========================================================================
@@ -164,12 +174,19 @@ export class ComputedManager {
 				logger.warn(`Watcher "${property}" is not a function, skipping`);
 				continue;
 			}
+			// Function.length reports declared param count (rest/default excluded).
+			// If the watcher only takes (newValue), we never need to snapshot oldValue.
+			// This skips a per-fire shallow clone on the hot path.
+			const needsOldValue = callback.length >= 2;
 			const boundCallback = callback.bind(this.componentProxy);
-			// Capture initial value — for computed, this triggers first evaluation
-			const initialValue = cloneValue(this.componentProxy[property]);
+			// Capture initial value — for computed, this triggers first evaluation.
+			// Skip the clone when oldValue will never be read.
+			const initialRaw = this.componentProxy[property];
+			const initialValue = needsOldValue ? cloneValue(initialRaw) : undefined;
 			this.watchers.set(property, {
 				callback: boundCallback,
-				oldValue: initialValue
+				oldValue: initialValue,
+				needsOldValue
 			});
 		}
 		logger.debug('Watchers registered', [...this.watchers.keys()]);
@@ -218,13 +235,55 @@ export class ComputedManager {
 			value = meta.cache; // Keep stale cache on error
 		}
 
+		const oldDeps = meta.deps;
 		meta.deps = stopTracking(prev);
 		meta.cache = value;
 		meta.dirty = false;
 
+		this._updateDepIndex(name, oldDeps, meta.deps);
+
 		evaluationStack.pop();
 
 		return value;
+	}
+
+	/**
+	 * Sync the reverse dep-index for a computed property when its deps change.
+	 * Called after each evaluate(). Removes entries from the old deps map
+	 * and adds entries from the new one.
+	 */
+	_updateDepIndex(name, oldDeps, newDeps) {
+		if (oldDeps) {
+			for (const [target, keys] of oldDeps) {
+				const targetMap = this.depIndex.get(target);
+				if (!targetMap) continue;
+				for (const key of keys) {
+					const computedSet = targetMap.get(key);
+					if (computedSet) {
+						computedSet.delete(name);
+						if (computedSet.size === 0) targetMap.delete(key);
+					}
+				}
+				if (targetMap.size === 0) this.depIndex.delete(target);
+			}
+		}
+		if (newDeps) {
+			for (const [target, keys] of newDeps) {
+				let targetMap = this.depIndex.get(target);
+				if (!targetMap) {
+					targetMap = new Map();
+					this.depIndex.set(target, targetMap);
+				}
+				for (const key of keys) {
+					let computedSet = targetMap.get(key);
+					if (!computedSet) {
+						computedSet = new Set();
+						targetMap.set(key, computedSet);
+					}
+					computedSet.add(name);
+				}
+			}
+		}
 	}
 
 	// ========================================================================
@@ -241,19 +300,16 @@ export class ComputedManager {
 	 * @param {Function} applyDynamicsFn - applyDynamics from Reactivity.js
 	 */
 	invalidate(target, key, applyBindingsFn, applyDynamicsFn) {
-		// Phase 1: Find directly affected computed properties
-		const toProcess = [];
-		for (const [name, meta] of this.computed) {
-			if (!meta.deps) continue;
-			const props = meta.deps.get(target);
-			if (props && props.has(key)) {
-				toProcess.push(name);
-			}
-		}
+		// O(1) lookup of computed depending on (target, key) via reverse index.
+		const targetMap = this.depIndex.get(target);
+		if (!targetMap) return;
+		const directly = targetMap.get(key);
+		if (!directly || directly.size === 0) return;
 
-		if (toProcess.length === 0) return;
+		// Snapshot to an array — cascade may push more entries, and evaluate()
+		// inside the loop can mutate the index sets.
+		const toProcess = [...directly];
 
-		// Phase 2: Process with cascade
 		const processed = new Set();
 		let i = 0;
 		while (i < toProcess.length) {
@@ -268,21 +324,22 @@ export class ComputedManager {
 			// Re-evaluate
 			const newValue = this.evaluate(name);
 
-			// If value changed, fire bindings and cascade
+			// If value changed, fire bindings and cascade.
 			if (!Object.is(oldValue, newValue)) {
 				applyBindingsFn(this.dataTarget, name, newValue);
 				applyDynamicsFn(this.dataTarget, name, newValue);
 
-				// Invoke watcher for this computed property (if any)
 				this._invokeComputedWatcher(name, newValue, oldValue);
 
-				// Cascade: find computed that depend on this computed name
-				for (const [otherName, otherMeta] of this.computed) {
-					if (processed.has(otherName)) continue;
-					if (!otherMeta.deps) continue;
-					const props = otherMeta.deps.get(this.dataTarget);
-					if (props && props.has(name)) {
-						toProcess.push(otherName);
+				// Cascade via the reverse index: find computed that read THIS
+				// computed (deps stored as (dataTarget, name)).
+				const rootMap = this.depIndex.get(this.dataTarget);
+				if (rootMap) {
+					const dependents = rootMap.get(name);
+					if (dependents) {
+						for (const otherName of dependents) {
+							if (!processed.has(otherName)) toProcess.push(otherName);
+						}
 					}
 				}
 			}
@@ -306,7 +363,7 @@ export class ComputedManager {
 		if (this.computed.has(key)) return;
 
 		const oldValue = watcher.oldValue;
-		watcher.oldValue = cloneValue(newValue);
+		if (watcher.needsOldValue) watcher.oldValue = cloneValue(newValue);
 
 		try {
 			watcher.callback(newValue, oldValue);
@@ -325,7 +382,7 @@ export class ComputedManager {
 		const watcher = this.watchers.get(name);
 		if (!watcher) return;
 
-		watcher.oldValue = cloneValue(newValue);
+		if (watcher.needsOldValue) watcher.oldValue = cloneValue(newValue);
 
 		try {
 			watcher.callback(newValue, oldValue);
@@ -344,6 +401,7 @@ export class ComputedManager {
 	destroy() {
 		this.computed.clear();
 		this.watchers.clear();
+		this.depIndex.clear();
 		if (this.dataTarget) {
 			managerMap.delete(this.dataTarget);
 		}

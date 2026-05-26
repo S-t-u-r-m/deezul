@@ -23,7 +23,7 @@ import { generateEvalFunctions, generateEvalCode } from './evalExtractor.js';
 import { splitDynamics, groupConditionalChains, extractDynamicTemplate, extractSourceProperties } from './dynamicSplitter.js';
 import { generateCode, astToHTML } from './codegen.js';
 import { parseComponent } from './scriptParser.js';
-import { processStyles } from './styleProcessor.js';
+import { processStyles, extractUsedSelectors, extractMatchingRules } from './styleProcessor.js';
 import { processAST } from './processor.js';
 
 import { readFile } from 'fs/promises';
@@ -186,7 +186,18 @@ function buildBytecodeOptimized(bindings, _strings, stringMap) {
 			}
 
 			case BIND_TYPE.TWO_WAY:
-				entry.push(stringMap.get(binding.properties[0]) ?? -1);
+				if (binding.isDotted) {
+					const dotIdx = binding.expression.lastIndexOf('.');
+					const targetExpr = binding.expression.substring(0, dotIdx);
+					const key = binding.expression.substring(dotIdx + 1);
+					const evalIdx = evalFunctions.length;
+					evalFunctions.push({ accessor: true, targetExpr, key });
+					entry.push(evalIdx);
+					entry.push(1);
+				} else {
+					entry.push(stringMap.get(binding.properties[0]) ?? -1);
+					entry.push(0);
+				}
 				break;
 
 			case BIND_TYPE.EVENT:
@@ -359,7 +370,7 @@ function compileConditionalBlockOptimized(items, markerIndex, options) {
  * @returns {object} Full compilation result with script sections
  */
 export function compileComponent(source, options = {}) {
-	const { componentName = 'Anonymous', minifyStyles = true } = options;
+	const { componentName = 'Anonymous', minifyStyles = true, sharedStyles = [] } = options;
 
 	// 1. Parse the component file to extract sections
 	const parsed = parseComponent(source);
@@ -384,6 +395,26 @@ export function compileComponent(source, options = {}) {
 		}
 
 		processedStyle = styleResult.css;
+	}
+
+	// 4. Extract matching rules from shared stylesheets
+	if (sharedStyles.length > 0) {
+		const ast = parseTemplate(parsed.template);
+		const used = extractUsedSelectors(ast);
+
+		const matchedParts = [];
+		for (const sharedCss of sharedStyles) {
+			const matched = extractMatchingRules(sharedCss, used, minifyStyles);
+			if (matched) matchedParts.push(matched);
+		}
+
+		if (matchedParts.length > 0) {
+			// Shared styles go first, component styles override
+			const sharedCombined = matchedParts.join('');
+			processedStyle = processedStyle
+				? sharedCombined + processedStyle
+				: sharedCombined;
+		}
 	}
 
 	// 4. Combine template compilation with script sections
@@ -526,6 +557,21 @@ export async function compileComponentFile(filePath, options = {}) {
 }
 
 /**
+ * Load shared CSS files and return their contents as an array
+ * Convenience utility for build tools
+ * @param {string[]} filePaths - Array of CSS file paths
+ * @returns {Promise<string[]>} Array of CSS strings
+ */
+export async function loadSharedStyles(filePaths) {
+	const styles = [];
+	for (const fp of filePaths) {
+		const css = await readFile(fp, 'utf-8');
+		styles.push(css);
+	}
+	return styles;
+}
+
+/**
  * Compile and generate output code (template only)
  * @param {string} template - Template string
  * @param {object} options - Compilation options
@@ -559,7 +605,8 @@ export async function compileFileToCode(filePath, options = {}) {
 	if (ext === '.js') {
 		const content = await readFile(filePath, 'utf-8');
 		const componentName = options.componentName || basename(filePath, ext);
-		return compileComponentToCode(content, { ...options, componentName });
+		const compilation = compileComponent(content, { ...options, componentName });
+		return generateCode(compilation);
 	} else {
 		const compilation = await compileFile(filePath, options);
 		return generateCode(compilation);
@@ -646,7 +693,9 @@ export {
 	generateCode,
 	astToHTML,
 	parseComponent,
-	processStyles
+	processStyles,
+	extractUsedSelectors,
+	extractMatchingRules
 };
 
 export default {
@@ -657,6 +706,7 @@ export default {
 	compileComponent,
 	compileComponentFile,
 	compileComponentToCode,
+	loadSharedStyles,
 	dumpCompilation,
 	// Constants
 	BIND_TYPE,

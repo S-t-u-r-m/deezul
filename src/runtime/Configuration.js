@@ -31,7 +31,7 @@ import { setLogLevel, setModuleLogLevel, LOG_LEVEL } from './Logger.js';
 export const directives = {
 	bind: ':',       // Property binding prefix (:class, :style, :for, :if)
 	event: '@',      // Event binding prefix (@click, @input)
-	reserved: ['for', 'if', 'else-if', 'else', 'bind', 'ref', 'model', 'slot']
+	reserved: ['for', 'if', 'else-if', 'else', 'bind', 'ref', 'slot']
 };
 
 // ============================================================================
