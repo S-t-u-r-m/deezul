@@ -9,7 +9,7 @@
  */
 
 import { componentRegistry } from './registries.js';
-import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback } from './Reactivity.js';
+import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback, unregisterUpdateCallback } from './Reactivity.js';
 import { forLoopReconcile } from './render.js';
 import { renderForLoop, renderConditional, updateConditional, teardownStructure } from './render.js';
 import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
@@ -814,6 +814,14 @@ class DzComponent extends HTMLElement {
 		const dynamics = this.component.dynamics;
 		for (let i = 0, len = dynamics.length; i < len; i++) {
 			teardownStructure(dynamics[i]);
+		}
+
+		// Drop the $updated callback so its closure (which captures `this`)
+		// becomes immediately GC-eligible rather than lingering in the
+		// onUpdateCallbacks WeakMap until the next Major GC collects the
+		// now-unreferenced data target.
+		if (this.component.data) {
+			unregisterUpdateCallback(this.component.data);
 		}
 
 		// Clear props/sync state

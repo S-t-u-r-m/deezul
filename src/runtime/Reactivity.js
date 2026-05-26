@@ -94,6 +94,16 @@ export function registerUpdateCallback(dataTarget, callback) {
     onUpdateCallbacks.set(dataTarget, callback);
 }
 
+/**
+ * Drop the $updated callback for a data target. Called by DzComponent.unmount
+ * so the captured closure (which holds the custom element strongly) becomes
+ * eligible for GC immediately rather than waiting for the WeakMap entry to
+ * collect on the next Major GC after the data target becomes unreachable.
+ */
+export function unregisterUpdateCallback(dataTarget) {
+    onUpdateCallbacks.delete(dataTarget);
+}
+
 // ============================================================================
 // REBINDING SUPPORT
 // ============================================================================
