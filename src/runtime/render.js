@@ -934,6 +934,25 @@ function clearAllInstances(structure) {
 }
 
 /**
+ * Tear down a :for or :if structure: walk its rendered instances and
+ * recursively tear them down, then unregister the structure itself from
+ * the Reactivity maps. Exported so DzComponent.unmount() can wind up the
+ * component's top-level dynamics (the unmount path that this fix
+ * originally missed for nested structures).
+ */
+export function teardownStructure(structure) {
+    if (structure.instances) {
+        for (let i = 0, len = structure.instances.length; i < len; i++) {
+            teardownInstance(structure.instances[i]);
+        }
+    }
+    if (structure.activeInstance) {
+        teardownInstance(structure.activeInstance);
+    }
+    unregisterStructure(structure);
+}
+
+/**
  * Tear down an instance's directives + nested :if/:for structures without
  * touching the DOM. Used by removeInstance (which then detaches the
  * instance's nodes) and by the recursive descent so deeply-nested
@@ -955,16 +974,7 @@ function teardownInstance(instance) {
     }
     if (instance.nestedDynamics) {
         for (let i = 0, len = instance.nestedDynamics.length; i < len; i++) {
-            const structure = instance.nestedDynamics[i];
-            if (structure.instances) {
-                for (let j = 0, jLen = structure.instances.length; j < jLen; j++) {
-                    teardownInstance(structure.instances[j]);
-                }
-            }
-            if (structure.activeInstance) {
-                teardownInstance(structure.activeInstance);
-            }
-            unregisterStructure(structure);
+            teardownStructure(instance.nestedDynamics[i]);
         }
     }
 }

@@ -231,9 +231,18 @@ export function addDynamicStructure(objectRef, property, dynamicStructure) {
 
 // Track each Set a structure is added to so unregisterStructure can
 // reverse every membership in O(memberships) without scanning the maps.
+// Dedup via indexOf: an :if branch that toggles N times re-registers the
+// structure against the same Sets N times, but we only need each Set ref
+// once for cleanup. indexOf is O(memberships) but the array stays tiny in
+// practice (1-5 entries per structure).
 function trackMembership(structure, set) {
-    if (!structure._memberships) structure._memberships = [];
-    structure._memberships.push(set);
+    if (!structure._memberships) {
+        structure._memberships = [set];
+        return;
+    }
+    if (structure._memberships.indexOf(set) === -1) {
+        structure._memberships.push(set);
+    }
 }
 
 /**

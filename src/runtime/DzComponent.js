@@ -11,7 +11,7 @@
 import { componentRegistry } from './registries.js';
 import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback } from './Reactivity.js';
 import { forLoopReconcile } from './render.js';
-import { renderForLoop, renderConditional, updateConditional } from './render.js';
+import { renderForLoop, renderConditional, updateConditional, teardownStructure } from './render.js';
 import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
 import { handleComponentError, clearErrorState, hasError } from './ErrorBoundary.js';
 import { renderStylesIntoShadow } from './StyleSystem.js';
@@ -37,48 +37,6 @@ function validateHook(hook, hookName, componentType) {
 	if (typeof hook === 'function') return hook;
 	logger.warn(`[${componentType}] ${hookName} must be a function, got ${typeof hook} — ignoring`);
 	return null;
-}
-
-/**
- * Recursively cleanup directive instances within dynamic structures (:for/:if).
- * Fires 'unmounted' hooks and runs element cleanup for all directive instances
- * nested within :for loop instances and :if active branches.
- * @param {Array} dynamics - Array of dynamic structures from component
- */
-function cleanupDynamics(dynamics) {
-	for (let i = 0, len = dynamics.length; i < len; i++) {
-		const dynamic = dynamics[i];
-		if (dynamic.instances) {
-			// :for structure — cleanup all rendered instances
-			for (let j = 0, jLen = dynamic.instances.length; j < jLen; j++) {
-				cleanupInstanceDirectives(dynamic.instances[j]);
-			}
-		}
-		if (dynamic.activeInstance) {
-			// :if structure — cleanup active branch
-			cleanupInstanceDirectives(dynamic.activeInstance);
-			if (dynamic.activeInstance.nestedDynamics) {
-				cleanupDynamics(dynamic.activeInstance.nestedDynamics);
-			}
-		}
-	}
-}
-
-/**
- * Cleanup directive instances on a single rendered instance (for/if).
- * @param {Object} instance - Rendered instance with optional directiveInstances array
- */
-function cleanupInstanceDirectives(instance) {
-	if (!instance.directiveInstances) return;
-	for (let i = 0, len = instance.directiveInstances.length; i < len; i++) {
-		try {
-			const { el, directive, binding } = instance.directiveInstances[i];
-			callDirectiveHook('unmounted', directive, el, binding);
-			runElementCleanup(el);
-		} catch (e) {
-			logger.warn('Dynamic directive cleanup failed', e);
-		}
-	}
 }
 
 /**
@@ -847,9 +805,15 @@ class DzComponent extends HTMLElement {
 			componentRegistry.unregisterInstance(this.component.type, this.component.instanceId);
 		}
 
-		// Cleanup dynamics (:for/:if directive instances)
-		if (this.component.dynamics.length > 0) {
-			cleanupDynamics(this.component.dynamics);
+		// Cleanup dynamics: tear down each top-level :for/:if and recurse into
+		// their rendered instances. teardownStructure (a) unmounts directives at
+		// every level, (b) unregisters the top-level structure from the
+		// Reactivity maps (forLoopMap / dataBindMap) so stale updateFn callbacks
+		// don't fire on dead DOM after this component is gone. Previous
+		// cleanupDynamics() only handled directives — leaked the registrations.
+		const dynamics = this.component.dynamics;
+		for (let i = 0, len = dynamics.length; i < len; i++) {
+			teardownStructure(dynamics[i]);
 		}
 
 		// Clear props/sync state
