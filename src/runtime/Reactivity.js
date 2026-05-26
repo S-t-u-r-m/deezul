@@ -212,6 +212,7 @@ export function addArrayForLoop(collectionRef, dynamicStructure) {
         forLoopMap.set(target, forLoops);
     }
     forLoops.add(dynamicStructure);
+    trackMembership(dynamicStructure, forLoops);
 }
 
 export function addDynamicStructure(objectRef, property, dynamicStructure) {
@@ -225,6 +226,29 @@ export function addDynamicStructure(objectRef, property, dynamicStructure) {
         propertyMap.set(dynamicKey, structures);
     }
     structures.add(dynamicStructure);
+    trackMembership(dynamicStructure, structures);
+}
+
+// Track each Set a structure is added to so unregisterStructure can
+// reverse every membership in O(memberships) without scanning the maps.
+function trackMembership(structure, set) {
+    if (!structure._memberships) structure._memberships = [];
+    structure._memberships.push(set);
+}
+
+/**
+ * Remove a dynamic structure from every Set it was added to (both
+ * forLoopMap and dataBindMap entries). Called by the render-side teardown
+ * when an instance is being removed, so dead :for/:if registrations don't
+ * accumulate in the reactivity maps across mount/unmount cycles.
+ */
+export function unregisterStructure(structure) {
+    const sets = structure._memberships;
+    if (!sets) return;
+    for (let i = 0, len = sets.length; i < len; i++) {
+        sets[i].delete(structure);
+    }
+    structure._memberships = null;
 }
 
 function getDynamicStructures(objectRef, property) {

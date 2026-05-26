@@ -15,7 +15,7 @@
  *   DOM
  */
 
-import { setRenderUpdates, addArrayForLoop, addBinding, addDynamicStructure } from './Reactivity.js';
+import { setRenderUpdates, addArrayForLoop, addBinding, addDynamicStructure, unregisterStructure } from './Reactivity.js';
 import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
 import { BindingType, getNodeByPath, getBindingDataLength, applyText, applyAttr, applyBoolAttr, applyValue, setAttrMerged, resolveDottedPath } from './constants.js';
 import { createLogger } from './Logger.js';
@@ -934,10 +934,18 @@ function clearAllInstances(structure) {
 }
 
 /**
- * Remove an instance from the DOM and cleanup
+ * Tear down an instance's directives + nested :if/:for structures without
+ * touching the DOM. Used by removeInstance (which then detaches the
+ * instance's nodes) and by the recursive descent so deeply-nested
+ * subtrees don't redundantly call removeChild on every inner node — the
+ * outer DOM removal sweeps them all in one shot.
+ *
+ * Critically, this unregisters each nested structure from the Reactivity
+ * maps. Without it, `addDynamicStructure` entries leak across collapse /
+ * remove cycles because dataBindMap has no lazy pruning (forLoopMap has
+ * some via forEachLiveForLoop, but only when the collection is mutated).
  */
-function removeInstance(instance) {
-    // Cleanup directives before DOM removal
+function teardownInstance(instance) {
     if (instance.directiveInstances) {
         for (let i = 0, len = instance.directiveInstances.length; i < len; i++) {
             const { el, directive, binding } = instance.directiveInstances[i];
@@ -945,6 +953,27 @@ function removeInstance(instance) {
             runElementCleanup(el);
         }
     }
+    if (instance.nestedDynamics) {
+        for (let i = 0, len = instance.nestedDynamics.length; i < len; i++) {
+            const structure = instance.nestedDynamics[i];
+            if (structure.instances) {
+                for (let j = 0, jLen = structure.instances.length; j < jLen; j++) {
+                    teardownInstance(structure.instances[j]);
+                }
+            }
+            if (structure.activeInstance) {
+                teardownInstance(structure.activeInstance);
+            }
+            unregisterStructure(structure);
+        }
+    }
+}
+
+/**
+ * Remove an instance from the DOM and cleanup
+ */
+function removeInstance(instance) {
+    teardownInstance(instance);
 
     const nodes = instance.nodes;
     for (let i = 0; i < nodes.length; i++) {
