@@ -176,25 +176,41 @@ export function addBinding(objectRef, property, nodeRef, metadata) {
     bindingEntry.node = nodeRef;
     bindingEntry.property = property;
 
+    let bindingSet;
     if (isObject(value)) {
         const objectTarget = getRawTarget(value);
-        let bindingSet = dataBindMap.get(objectTarget);
+        bindingSet = dataBindMap.get(objectTarget);
         if (!bindingSet) {
             bindingSet = new Set();
             dataBindMap.set(objectTarget, bindingSet);
         }
-        bindingSet.add(bindingEntry);
     } else {
         const propertyMap = getOrCreatePropertyMap(target);
-        let bindingSet = propertyMap.get(property);
+        bindingSet = propertyMap.get(property);
         if (!bindingSet) {
             bindingSet = new Set();
             propertyMap.set(property, bindingSet);
         }
-        bindingSet.add(bindingEntry);
     }
+    bindingSet.add(bindingEntry);
+    // Stash the owning Set on the entry so removeBinding can drop it in O(1)
+    // without re-resolving the (target, property) → Set lookup.
+    bindingEntry._set = bindingSet;
 
     return bindingEntry;
+}
+
+/**
+ * Remove a previously-registered binding entry from its owning Set.
+ * Called by teardownInstance when a chain item (:if branch) is unmounted —
+ * without this, addBinding entries accumulate on every branch swap and
+ * applyBindings later iterates over entries pointing to detached DOM.
+ */
+export function removeBinding(bindingEntry) {
+    const set = bindingEntry && bindingEntry._set;
+    if (!set) return;
+    set.delete(bindingEntry);
+    bindingEntry._set = null;
 }
 
 function getBindings(objectRef, property) {

@@ -15,7 +15,7 @@
  *   DOM
  */
 
-import { setRenderUpdates, addArrayForLoop, addBinding, addDynamicStructure, unregisterStructure } from './Reactivity.js';
+import { setRenderUpdates, addArrayForLoop, addBinding, addDynamicStructure, unregisterStructure, removeBinding } from './Reactivity.js';
 import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
 import { BindingType, getNodeByPath, getBindingDataLength, applyText, applyAttr, applyBoolAttr, applyValue, setAttrMerged, resolveDottedPath } from './constants.js';
 import { createLogger } from './Logger.js';
@@ -972,6 +972,16 @@ function teardownInstance(instance) {
             runElementCleanup(el);
         }
     }
+    // Drop bindings registered via addBinding. Chain items (:if branches) push
+    // their addBinding return values onto instance.bindings; for-loop rows
+    // push plain local objects that have no `_set`, so removeBinding is a
+    // safe no-op for those. Without this, addBinding entries accumulate on
+    // every :if branch swap and applyBindings iterates over detached nodes.
+    if (instance.bindings) {
+        for (let i = 0, len = instance.bindings.length; i < len; i++) {
+            removeBinding(instance.bindings[i]);
+        }
+    }
     if (instance.nestedDynamics) {
         for (let i = 0, len = instance.nestedDynamics.length; i < len; i++) {
             teardownStructure(instance.nestedDynamics[i]);
@@ -1139,7 +1149,7 @@ function renderChainItem(item, parentProxy) {
                         deferredMounts.push({ el: bindNode, directive, binding: dBinding });
 
                         if (directive.updated) {
-                            addBinding(parentProxy, prop, bindNode, {
+                            const dirBinding = addBinding(parentProxy, prop, bindNode, {
                                 type: 'directive',
                                 directiveRef: directive,
                                 directiveBinding: dBinding,
@@ -1149,6 +1159,7 @@ function renderChainItem(item, parentProxy) {
                                     callDirectiveHook('updated', b.directiveRef, b.node, b.directiveBinding);
                                 }
                             });
+                            bindings.push(dirBinding);
                         }
                     } else {
                         const value = parentProxy[prop];
@@ -1187,10 +1198,10 @@ function renderChainItem(item, parentProxy) {
                     bindNode.addEventListener(eventName, (e) => {
                         bindTarget[bindKey] = e.target.value;
                     });
-                    addBinding(bindTarget, bindKey, bindNode, {
+                    bindings.push(addBinding(bindTarget, bindKey, bindNode, {
                         type: 'two-way',
                         applyFn: applyValue
-                    });
+                    }));
                     break;
                 }
                 case BindingType.EVENT: {
