@@ -124,6 +124,16 @@ function resolveEventArg(arg, scope, event) {
     if (arg === 'undefined') return undefined;
     // Number literal
     if (arg !== '' && !isNaN(arg)) return Number(arg);
+    // Member path (e.g. post.id, $event.target.value, obj.a.b): resolve the head
+    // segment from scope/$event, then walk the remaining segments.
+    const dot = arg.indexOf('.');
+    if (dot !== -1) {
+        const head = arg.slice(0, dot);
+        let value = head === '$event' ? event : scope[head];
+        const rest = arg.slice(dot + 1).split('.');
+        for (let i = 0; i < rest.length && value != null; i++) value = value[rest[i]];
+        return value;
+    }
     // Scope property lookup
     return scope[arg];
 }
@@ -435,13 +445,14 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                         });
                     } else {
                         bindNode.addEventListener(eventName, (e) => {
+                            // Resolve args against an iteration-aware scope so the loop
+                            // variable resolves both bare (`post`) and as a member path
+                            // (`post.id`). Built per-fire to read the row's current
+                            // item/index after reorders.
+                            const scope = makeIterScope(parentProxy, iteratorVar, instance.item, indexVar, instance.index);
                             const args = new Array(argNames.length);
                             for (let i = 0; i < argNames.length; i++) {
-                                const a = argNames[i];
-                                if (a === iteratorVar) args[i] = instance.item;
-                                else if (a === indexVar) args[i] = instance.index;
-                                else if (a === '$event') args[i] = e;
-                                else args[i] = resolveEventArg(a, parentProxy, e);
+                                args[i] = resolveEventArg(argNames[i], scope, e);
                             }
                             parentProxy[methodName](...args);
                         });

@@ -388,6 +388,13 @@ function applyMutation(target, type, meta, proxyInstance) {
         const parentKey = proxyInstance[PARENT_KEY];
         if (parent && parentKey) {
             const parentTarget = getRawTarget(parent);
+            // Recompute computed properties derived from this collection (e.g.
+            // `count() { return this.posts.length }`). A same-reference mutation
+            // never goes through recordChange, so applyChanges' invalidate pass
+            // is skipped — invalidate here against the holding key, which every
+            // such computed captures as a dependency when it reads the array.
+            const manager = getManager(parentTarget);
+            if (manager) manager.invalidate(parentTarget, parentKey, applyBindings, applyDynamics);
             applyBindings(parentTarget, parentKey, target);
             applyDynamics(parentTarget, parentKey, target);
         }
