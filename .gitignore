@@ -24,3 +24,6 @@ Desktop.ini
 # Logs
 *.log
 npm-debug.log*
+
+# Claude session notes (scratch)
+lastsession.md
