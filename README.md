@@ -2,7 +2,7 @@
 
 A lightweight reactive UI framework with Shadow DOM web components, proxy-based reactivity, and bytecode-compiled templates.
 
-[![CI](https://github.com/USER/deezul/actions/workflows/ci.yml/badge.svg)](https://github.com/USER/deezul/actions/workflows/ci.yml)
+[![CI](https://github.com/S-t-u-r-m/deezul/actions/workflows/ci.yml/badge.svg)](https://github.com/S-t-u-r-m/deezul/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Features
@@ -310,7 +310,7 @@ deezul/
 ## Development
 
 ```bash
-git clone https://github.com/USER/deezul.git
+git clone https://github.com/S-t-u-r-m/deezul.git
 cd deezul
 npm install
 npm run build             # Build runtime bundles

@@ -33,14 +33,27 @@
     "test": "node test/run.js",
     "dev": "node examples/showcase/server.js"
   },
-  "devDependencies": {
-    "@rollup/plugin-terser": "^0.4.0",
+  "dependencies": {
     "chokidar": "^4.0.3",
     "css-tree": "^3.1.0",
-    "htmlparser2": "^9.1.0",
+    "htmlparser2": "^9.1.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-terser": "^1.0.0",
     "http-server": "^14.1.1",
     "rollup": "^4.0.0"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/S-t-u-r-m/deezul.git"
+  },
+  "bugs": {
+    "url": "https://github.com/S-t-u-r-m/deezul/issues"
+  },
+  "homepage": "https://github.com/S-t-u-r-m/deezul#readme",
   "keywords": [
     "framework",
     "web-components",
