@@ -39,6 +39,7 @@ export function generateCode(compilation) {
 		computed,
 		staticData,
 		watcher,
+		schema,
 		style,
 		// Lifecycle hooks
 		$created,
@@ -123,6 +124,13 @@ export function generateCode(compilation) {
 
 	if (watcher) {
 		lines.push(`\twatch: ${watcher},`);
+		lines.push('');
+	}
+
+	// Schema — the component's public interface (editable inputs + slots).
+	// Emitted verbatim as an object literal; runtime ignores it, the editor reads it.
+	if (schema) {
+		lines.push(`\tschema: ${schema},`);
 		lines.push('');
 	}
 

@@ -427,6 +427,7 @@ export function compileComponent(source, options = {}) {
 		computed: parsed.computed,
 		staticData: parsed.staticData,
 		watcher: parsed.watcher,
+		schema: parsed.schema,
 		style: processedStyle,
 		// Lifecycle hooks
 		$created: parsed.$created,
@@ -439,6 +440,7 @@ export function compileComponent(source, options = {}) {
 		hasMethods: !!parsed.method,
 		hasComputed: !!parsed.computed,
 		hasWatchers: !!parsed.watcher,
+		hasSchema: !!parsed.schema,
 		hasStyles: !!parsed.style
 	};
 }

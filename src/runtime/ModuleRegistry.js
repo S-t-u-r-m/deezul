@@ -310,6 +310,18 @@ export function createModuleRegistry(name, options = {}) {
         return entry ? entry.metadata : null;
     }
 
+    /**
+     * Get a module's declared schema (its public interface: editable inputs + slots).
+     * Loads the module if needed. Used by the page builder to introspect a component
+     * and auto-generate its property panel. Returns null if the module declares none.
+     * @param {string} ref - Module reference
+     * @returns {Promise<Object|null>}
+     */
+    async function getSchema(ref) {
+        const entry = await _ensureLoaded(ref);
+        return entry?.module?.schema || null;
+    }
+
     // ========================================================================
     // Instance Tracking (for component GC)
     // ========================================================================
@@ -656,6 +668,7 @@ export function createModuleRegistry(name, options = {}) {
         remove,
         list,
         getMetadata,
+        getSchema,
         whenRegistered,
 
         // Instance tracking

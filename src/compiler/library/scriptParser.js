@@ -41,6 +41,7 @@ export function parseComponent(source) {
 		computed: null,
 		staticData: null,
 		watcher: null,
+		schema: null,
 		style: null,
 		// Lifecycle hooks
 		$created: null,
@@ -71,6 +72,10 @@ export function parseComponent(source) {
 
 	// Watchers
 	result.watcher = extractObjectProperty(scriptBody, 'watch');
+
+	// Schema — the component's public interface (editable inputs + slots) for the
+	// page builder. Plain object literal; runtime ignores it, the editor introspects it.
+	result.schema = extractObjectProperty(scriptBody, 'schema');
 
 	// Styles — extract from original body (not blanked)
 	result.style = extractStringProperty(componentBody, 'styles');
