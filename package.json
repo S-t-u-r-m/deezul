@@ -16,13 +16,15 @@
   },
   "bin": {
     "deezul-compile": "./src/compiler/bin/cli.js",
-    "deezul-dev": "./src/dev-server/index.js"
+    "deezul-dev": "./src/dev-server/index.js",
+    "deezul-build": "./src/build/index.js"
   },
   "files": [
     "dist/",
     "src/runtime/",
     "src/compiler/",
     "src/dev-server/",
+    "src/build/",
     "LICENSE",
     "README.md"
   ],
