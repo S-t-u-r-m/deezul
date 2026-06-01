@@ -54,8 +54,12 @@ if (fs.existsSync(SRC_DIR)) {
 // ── HTTP server ────────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
+    // Route on the path only — strip the query string (e.g. ?noreload) so it
+    // doesn't become part of the looked-up filename.
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+
     // SSE endpoint for live reload
-    if (req.url === '/__reload') {
+    if (pathname === '/__reload') {
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
@@ -68,7 +72,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Serve the deezul runtime straight from this package (no copy step).
-    if (req.url === '/deezul.esm.js') {
+    if (pathname === '/deezul.esm.js') {
         try {
             const data = await readFile(RUNTIME);
             res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache' });
@@ -81,7 +85,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // On-demand compile: /compiled/<Name>.compiled.js  ⇐  <cwd>/src/<Name>.js
-    const m = req.url.match(/^\/compiled\/(.+)\.compiled\.js$/);
+    const m = pathname.match(/^\/compiled\/(.+)\.compiled\.js$/);
     if (m) {
         const srcPath = path.join(SRC_DIR, `${m[1]}.js`);
         try {
@@ -98,7 +102,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Static files (index.html, main.js, configs, assets) from the app dir
-    let filePath = path.join(ROOT, req.url === '/' ? 'index.html' : req.url);
+    let filePath = path.join(ROOT, pathname === '/' ? 'index.html' : pathname);
 
     // SPA fallback — serve index.html for extensionless routes
     if (!path.extname(filePath)) {
