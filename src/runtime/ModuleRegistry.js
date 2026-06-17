@@ -10,16 +10,32 @@
  * - Reference counting for garbage collection
  * - Data stores: localStorage persistence, proxy wrapping, getCopy
  *
+ * Data-store proxies are full participants in the reactivity system: a store
+ * is wrapped via Reactivity.createReactiveData, so any component whose
+ * template depends on store state re-renders when another component mutates
+ * it. localStorage persistence and watch() callbacks ride the same flush
+ * (change listeners + per-target update callbacks).
+ *
  * Usage:
  * const componentRegistry = createModuleRegistry('components');
  * const dataRegistry = createModuleRegistry('data', { enableLocalStorage: true });
  */
 
 import { createProxyFactory, TARGET } from './DataProxy.js';
+import { createReactiveData, addChangeListener, registerUpdateCallback } from './Reactivity.js';
 import { deepClone } from './helpers.js';
-import { TYPEOF } from './constants.js';
 import { createLogger } from './Logger.js';
 import { isReservedPrefix } from './LibraryComponents.js';
+
+// Minimal pass-through handlers for getCopy() clones — plain reads/writes,
+// no persistence, no watcher notifications.
+const cloneHandlers = new Map([
+    [Object, {
+        get: (target, key) => target[key],
+        set: (target, key, value) => { target[key] = value; return true; },
+        delete: (target, key) => { delete target[key]; return true; }
+    }]
+]);
 
 /**
  * Create a new module registry instance
@@ -89,11 +105,11 @@ export function createModuleRegistry(name, options = {}) {
         };
 
         // String = module path for lazy loading
-        if (typeof pathOrData === TYPEOF.STRING) {
+        if (typeof pathOrData === 'string') {
             entry.modulePath = pathOrData;
         }
         // Object = inline data/config (already loaded)
-        else if (typeof pathOrData === TYPEOF.OBJECT && pathOrData !== null) {
+        else if (typeof pathOrData === 'object' && pathOrData !== null) {
             entry.module = pathOrData;
             entry.loaded = true;
         }
@@ -233,7 +249,7 @@ export function createModuleRegistry(name, options = {}) {
         // Unwrap if proxied, then deep clone
         const raw = entry.module[TARGET] || entry.module;
         const cloned = deepClone(raw);
-        const factory = createProxyFactory();
+        const factory = createProxyFactory(cloneHandlers);
         return factory.createProxy(cloned);
     }
 
@@ -517,7 +533,7 @@ export function createModuleRegistry(name, options = {}) {
                 let loadedModule = module.default || module;
 
                 // If it's a factory function, call it to get the component definition
-                if (typeof loadedModule === TYPEOF.FUNCTION && !loadedModule.prototype?.render) {
+                if (typeof loadedModule === 'function' && !loadedModule.prototype?.render) {
                     loadedModule = loadedModule();
                 }
 
@@ -544,38 +560,39 @@ export function createModuleRegistry(name, options = {}) {
     }
 
     /**
-     * Create proxy for data store with localStorage persistence
+     * Create the shared reactive proxy for a data store.
+     *
+     * The store joins the main reactivity system (createReactiveData), so DOM
+     * bindings in ANY component that read store state update when the store
+     * changes. On top of that:
+     *   - a change listener on the root drives watch() callbacks for
+     *     top-level keys (and collection mutations on top-level collections),
+     *   - a per-target update callback (propagated to nested targets the same
+     *     way component $updated is) drives debounced localStorage persistence
+     *     for changes at ANY depth.
+     *
      * @param {Object} entry - Registry entry
      * @returns {Proxy}
      */
     function _createProxy(entry) {
-        // Create proxy with localStorage persistence and watcher support on set/delete
-        const factory = createProxyFactory(new Map([
-            [Object, {
-                get: (target, key) => target[key],
-                set: (target, key, value) => {
-                    const oldValue = target[key];
-                    target[key] = value;
-                    if (entry.localStorage) {
-                        _debouncedPersist(entry);
-                    }
-                    // Notify watchers
-                    const watchers = storeWatchers.get(entry.ref);
-                    if (watchers) {
-                        const keyWatchers = watchers.get(key);
-                        if (keyWatchers) {
-                            for (const cb of keyWatchers) cb(value, oldValue);
-                        }
-                    }
-                    return true;
-                },
-                delete: (target, key) => {
-                    delete target[key];
-                    return true;
+        const proxy = createReactiveData(entry.module);
+
+        addChangeListener(entry.module, (key, value, oldValue) => {
+            if (entry.localStorage) _debouncedPersist(entry);
+            const watchers = storeWatchers.get(entry.ref);
+            if (watchers) {
+                const keyWatchers = watchers.get(key);
+                if (keyWatchers) {
+                    for (const cb of keyWatchers) cb(value, oldValue);
                 }
-            }]
-        ]));
-        return factory.createProxy(entry.module);
+            }
+        });
+
+        if (entry.localStorage) {
+            registerUpdateCallback(entry.module, () => _debouncedPersist(entry));
+        }
+
+        return proxy;
     }
 
     /**

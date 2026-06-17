@@ -33,11 +33,57 @@ function sendReload() {
 
 // ── Auto-compile on file change ──────────────────────────────────────────────
 
+/**
+ * Watch a directory tree for .js changes. Tries native fs.watch (recursive)
+ * first; recursive watching is unavailable on network/mapped drives on
+ * Windows (FSWatcher dies with UNKNOWN errno -4094), so on failure we fall
+ * back to polling file mtimes once a second.
+ */
+function watchSrc(dir, onChange) {
+    const POLL_MS = 1000;
+
+    const startPolling = () => {
+        console.log('[watch] fs.watch unavailable (network drive?) — polling for changes instead');
+        const mtimes = new Map();
+        const scan = (d, base, fire) => {
+            let entries;
+            try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+            for (const entry of entries) {
+                const full = path.join(d, entry.name);
+                const rel = base ? path.join(base, entry.name) : entry.name;
+                if (entry.isDirectory()) {
+                    scan(full, rel, fire);
+                } else if (entry.name.endsWith('.js')) {
+                    let mtime;
+                    try { mtime = fs.statSync(full).mtimeMs; } catch { continue; }
+                    const prev = mtimes.get(rel);
+                    mtimes.set(rel, mtime);
+                    if (fire && prev !== mtime) onChange(rel);
+                }
+            }
+        };
+        scan(dir, '', false); // prime mtimes without firing
+        setInterval(() => scan(dir, '', true), POLL_MS).unref();
+    };
+
+    try {
+        const watcher = fs.watch(dir, { recursive: true }, (_eventType, filename) => {
+            if (filename && filename.endsWith('.js')) onChange(filename);
+        });
+        // The UNKNOWN error arrives asynchronously — without this handler it
+        // crashes the whole process.
+        watcher.on('error', () => {
+            watcher.close();
+            startPolling();
+        });
+    } catch {
+        startPolling();
+    }
+}
+
 let debounceTimer = null;
 
-fs.watch(SRC_DIR, { recursive: true }, (eventType, filename) => {
-    if (!filename || !filename.endsWith('.js')) return;
-
+watchSrc(SRC_DIR, (filename) => {
     // Debounce rapid saves
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {

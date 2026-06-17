@@ -316,7 +316,10 @@ function detectElementBindings(node, path, bindings, dynamics) {
 				path,
 				position: node.start,
 				node,
-				...parsed
+				...parsed,
+				// Optional :key="item.id" — expression over the loop variables,
+				// compiled into keyFn for keyed reconciliation.
+				keyExpr: attrs[':key'] || null
 			});
 			continue;
 		}
@@ -377,6 +380,10 @@ function detectElementBindings(node, path, bindings, dynamics) {
 		if (name.startsWith(':')) {
 			const attrName = name.slice(1);
 
+			// :key is :for metadata (consumed by the loop dynamic), never
+			// an attribute binding.
+			if (attrName === 'key') continue;
+
 			// Two-way binding: :bind on form elements
 			if (attrName === 'bind' && isFormElement(node.tag)) {
 				bindings.push({
@@ -390,9 +397,10 @@ function detectElementBindings(node, path, bindings, dynamics) {
 				continue;
 			}
 
-			// Check for .sync modifier
-			const isSync = attrName.endsWith('.sync');
-			const cleanAttrName = isSync ? attrName.slice(0, -5) : attrName;
+			// Check for .share modifier (live two-way prop); .sync is a
+			// back-compat alias.
+			const isSync = attrName.endsWith('.share') || attrName.endsWith('.sync');
+			const cleanAttrName = isSync ? attrName.slice(0, attrName.lastIndexOf('.')) : attrName;
 
 			// Check for mixed content with {{ }} interpolations
 			const hasMixedContent = value.includes('{{') && value.includes('}}');

@@ -294,6 +294,7 @@ function compileForBlockOptimized(dynamic, markerIndex, options) {
 		markerPath: dynamic.path,
 		iteratorVar: dynamic.iteratorVar,
 		indexVar: dynamic.indexVar,
+		keyExpr: dynamic.keyExpr || null,
 		source: dynamic.source,
 		sourceProperties: extractSourceProperties(dynamic.source),
 		compiled: {
@@ -463,7 +464,7 @@ function compileDynamicBlocks(blocks, options) {
  * Compile a :for block
  */
 function compileForBlock(block, options) {
-	const { templateNode, iteratorVar, indexVar, source, sourceProperties, markerIndex } = block;
+	const { templateNode, iteratorVar, indexVar, keyExpr, source, sourceProperties, markerIndex } = block;
 
 	// Wrap template node in a root for compilation
 	const ast = { type: 'root', children: [templateNode] };
@@ -477,6 +478,7 @@ function compileForBlock(block, options) {
 		type: 'for',
 		iteratorVar,
 		indexVar,
+		keyExpr: keyExpr || null,
 		source,
 		sourceProperties,
 		markerIndex,

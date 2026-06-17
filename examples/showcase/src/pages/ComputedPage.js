@@ -40,11 +40,11 @@ export default Deezul.Component({
             <div class="demo-box">
                 <div class="demo-row">
                     <label>First:</label>
-                    <input :model="firstName" class="demo-input" />
+                    <input :bind="firstName" class="demo-input" />
                 </div>
                 <div class="demo-row">
                     <label>Last:</label>
-                    <input :model="lastName" class="demo-input" />
+                    <input :bind="lastName" class="demo-input" />
                 </div>
                 <p class="demo-result">Full name: <strong>{{ fullName }}</strong></p>
                 <p class="demo-result">Greeting: <strong>{{ greeting }}</strong></p>

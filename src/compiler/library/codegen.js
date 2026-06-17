@@ -349,6 +349,12 @@ function generateForDynamic(dynamic) {
 		lines.push(`\t\t\tindexVar: ${JSON.stringify(dynamic.indexVar)},`);
 	}
 
+	// :key="item.id" → keyFn(item) for keyed reconciliation. The expression is
+	// evaluated over the loop variable only (not component state).
+	if (dynamic.keyExpr) {
+		lines.push(`\t\t\tkeyFn: function(${dynamic.iteratorVar}) { return ${dynamic.keyExpr}; },`);
+	}
+
 	// Nested compiled template
 	if (dynamic.compiled) {
 		lines.push(`\t\t\ttemplate: ${JSON.stringify(dynamic.compiled.templateHTML)},`);

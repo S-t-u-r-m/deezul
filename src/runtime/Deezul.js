@@ -16,7 +16,7 @@ import { createLogger, setLogLevel, setModuleLogLevel, LOG_LEVEL } from './Logge
 import { registerDirective, unregisterDirective, getDirective, getDirectiveNames } from './Directives.js';
 import { registerGlobalErrorHandler, unregisterGlobalErrorHandler } from './ErrorBoundary.js';
 import { configure, getConfig, directives, logging, errors, framework } from './Configuration.js';
-import { REBINDABLE, REBIND, PARENT_PROXY } from './DataProxy.js';
+import { REBINDABLE, REBIND, PARENT_PROXY, nextTick, markRaw, toRaw } from './DataProxy.js';
 import { dz404 } from './LibraryComponents.js';
 import './DzComponent.js';
 import './RouterComponent.js';
@@ -289,6 +289,11 @@ const Deezul = {
 	// Component creation
 	createComponent,
 
+	// Reactivity utilities
+	nextTick,
+	markRaw,
+	toRaw,
+
 	// Framework state
 	isInitialized,
 
@@ -316,4 +321,4 @@ if (typeof window !== 'undefined') window.Deezul = Deezul;
 else if (typeof globalThis !== 'undefined') globalThis.Deezul = Deezul;
 
 export default Deezul;
-export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, cloneStore, createComponent, isInitialized, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };
+export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, cloneStore, createComponent, isInitialized, nextTick, markRaw, toRaw, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };

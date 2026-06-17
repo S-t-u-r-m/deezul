@@ -31,10 +31,10 @@ onSubmit(event) {
 }</code></pre>
 
             <h2>Two-Way Binding</h2>
-            <p>Use <code>:model</code> for two-way binding on form inputs:</p>
-            <pre class="code-block" :pre><code>&lt;input :model="name" /&gt;
-&lt;textarea :model="bio"&gt;&lt;/textarea&gt;
-&lt;select :model="role"&gt;
+            <p>Use <code>:bind</code> for two-way binding on form inputs:</p>
+            <pre class="code-block" :pre><code>&lt;input :bind="name" /&gt;
+&lt;textarea :bind="bio"&gt;&lt;/textarea&gt;
+&lt;select :bind="role"&gt;
     &lt;option value="admin"&gt;Admin&lt;/option&gt;
     &lt;option value="user"&gt;User&lt;/option&gt;
 &lt;/select&gt;</code></pre>
@@ -44,11 +44,11 @@ onSubmit(event) {
             <div class="demo-box">
                 <div class="demo-row">
                     <label>Name:</label>
-                    <input :model="name" class="demo-input" />
+                    <input :bind="name" class="demo-input" />
                 </div>
                 <div class="demo-row">
                     <label>Color:</label>
-                    <select :model="color" class="demo-input">
+                    <select :bind="color" class="demo-input">
                         <option value="blue">Blue</option>
                         <option value="green">Green</option>
                         <option value="red">Red</option>

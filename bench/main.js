@@ -9,13 +9,13 @@
 
 import '/src/runtime/DzComponent.js';
 import { componentRegistry } from '/src/runtime/registries.js';
-import BenchList from '/bench/BenchList.compiled.js';
+import BenchComponent from '/bench/BenchRichList.compiled.js';
 
 // ============================================================================
 // SETUP
 // ============================================================================
 
-componentRegistry.register('bench-list', BenchList);
+componentRegistry.register('bench-list', BenchComponent);
 
 let proxy = null;
 
@@ -120,6 +120,15 @@ const benchmarks = [
         name: "Create 10,000 rows",
         setup: () => { proxy.items = []; },
         run: () => { proxy.items.push(...buildData(10000)); }
+    },
+    {
+        key: "create100k",
+        name: "Create 100,000 rows",
+        setup: () => { proxy.items = []; },
+        // Use assignment instead of push(...spread): 100k spread args exceeds the
+        // JS engine arg-stack limit. Assigning an array to an empty `items` still
+        // exercises the create path via forLoopReconcile's Phase-2 add branch.
+        run: () => { proxy.items = buildData(100000); }
     },
     {
         key: "replace1k",

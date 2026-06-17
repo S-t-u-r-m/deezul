@@ -31,7 +31,7 @@ export default Deezul.Component({
                     <p>Character count: <strong>{{ message.length }}</strong></p>
                 </div>
                 <div class="demo-controls">
-                    <input :model="message" placeholder="Type something..." class="demo-input" />
+                    <input :bind="message" placeholder="Type something..." class="demo-input" />
                     <button @click="reset" class="demo-btn">Reset</button>
                 </div>
             </div>

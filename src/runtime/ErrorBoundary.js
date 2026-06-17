@@ -118,7 +118,15 @@ function createErrorInfo(el, error, phase) {
 export function handleComponentError(el, error, phase) {
 	const errorInfo = createErrorInfo(el, error, phase);
 
-	logger.error(`Component error in '${errorInfo.type}' during ${phase}:`, error);
+	if (errorConfig.logToConsole) {
+		// Passing the Error object makes the logger print its stack trace —
+		// only include it when configured to.
+		if (errorConfig.showStackTrace) {
+			logger.error(`Component error in '${errorInfo.type}' during ${phase}:`, error);
+		} else {
+			logger.error(`Component error in '${errorInfo.type}' during ${phase}: ${errorInfo.message}`);
+		}
+	}
 
 	// Set error state (preserves recovery attempt count)
 	setErrorState(el, errorInfo);
@@ -184,6 +192,8 @@ function renderBuiltInFallback(el, errorInfo) {
 	const canRetry = attempts < maxAttempts;
 
 	// Set up delegated click listener once — survives innerHTML changes
+	// (the shadowRoot persists for the element's lifetime, so this never
+	// needs re-attaching)
 	if (!el._dz_retryDelegate) {
 		el._dz_retryDelegate = (e) => {
 			if (e.target.closest('[data-dz-retry]') && e.isTrusted) {
@@ -191,9 +201,6 @@ function renderBuiltInFallback(el, errorInfo) {
 			}
 		};
 		el.shadowRoot.addEventListener('click', el._dz_retryDelegate);
-	} else if (!el.shadowRoot) {
-		// Element was remounted — re-attach listener to new shadowRoot
-		el._dz_retryDelegate = null;
 	}
 
 	el.shadowRoot.innerHTML = renderError(errorInfo, canRetry, maxAttempts - attempts);

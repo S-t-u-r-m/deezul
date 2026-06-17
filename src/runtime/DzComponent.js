@@ -9,14 +9,16 @@
  */
 
 import { componentRegistry } from './registries.js';
-import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback, unregisterUpdateCallback } from './Reactivity.js';
-import { forLoopReconcile } from './render.js';
-import { renderForLoop, renderConditional, updateConditional, teardownStructure } from './render.js';
-import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
+import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback, unregisterUpdateCallback, removeBinding } from './Reactivity.js';
+import {
+	forLoopReconcile, renderForLoop, renderConditional, updateConditional,
+	teardownStructure, decodeBindingDescs, applyDescsToTree, ensureForStamp
+} from './render.js';
+import { callDirectiveHook, runElementCleanup } from './Directives.js';
 import { handleComponentError, clearErrorState, hasError } from './ErrorBoundary.js';
 import { renderStylesIntoShadow } from './StyleSystem.js';
 import { renderLoading } from './LibraryComponents.js';
-import { BindingType, getNodeByPath, getBindingDataLength, applyText, applyAttr, applyBoolAttr, applyValue, setAttrMerged, resolveDottedPath } from './constants.js';
+import { getNodeByPath, resolveDottedPath } from './constants.js';
 import { createLogger } from './Logger.js';
 
 const logger = createLogger('DzComponent');
@@ -37,21 +39,6 @@ function validateHook(hook, hookName, componentType) {
 	if (typeof hook === 'function') return hook;
 	logger.warn(`[${componentType}] ${hookName} must be a function, got ${typeof hook} — ignoring`);
 	return null;
-}
-
-/**
- * Shared apply function for PROP and PROP_SYNC bindings.
- * Updates the child component's proxy if mounted, otherwise stores in _props.
- */
-function applyPropValue(value, b) {
-	if (b.node.component?.isMounted) {
-		b.node._propUpdating = true;
-		b.node.component.proxy[b.propName] = value;
-		b.node._propUpdating = false;
-	} else {
-		if (!b.node._props) b.node._props = {};
-		b.node._props[b.propName] = value;
-	}
 }
 
 /**
@@ -105,6 +92,7 @@ class DzComponent extends HTMLElement {
 			// Binding maps (for reactive updates)
 			binding: null,       // { strings, code } - bytecode
 			eval: null,          // Expression functions
+			bindings: null,      // Registered addBinding entries (removed on unmount)
 
 			// DOM references
 			root: null,          // Root element for path-based access
@@ -194,18 +182,28 @@ class DzComponent extends HTMLElement {
 		// Wait for component to be registered
 		await componentRegistry.whenRegistered(type);
 
-		// Guard: abort if removed from DOM while awaiting (zombie prevention)
-		if (!this.isConnected) return;
+		// Guard: abort if removed from DOM while awaiting (zombie prevention).
+		// _loading must be cleared on every exit path so a later reconnect
+		// (disconnectedCallback + connectedCallback fire even on a DOM move)
+		// can mount again.
+		if (!this.isConnected) {
+			this._loading = null;
+			return;
+		}
 
 		// Get component definition from registry
 		const def = await componentRegistry.get(type);
 
 		// Guard again after second await
-		if (!this.isConnected) return;
+		if (!this.isConnected) {
+			this._loading = null;
+			return;
+		}
 
 		if (!def) {
 			logger.error(`[${this.component.instanceId}] Component '${type}' not found in registry`);
 			this.shadowRoot.innerHTML = `<div style="color:red">Component "${type}" not found</div>`;
+			this._loading = null;
 			return;
 		}
 
@@ -234,7 +232,14 @@ class DzComponent extends HTMLElement {
 		this.component.binding = def.binding || { strings: [], code: new Uint16Array(0) };
 		this.component.eval = def.eval || [];
 
-		// Step 1.3: Inject parent props (stored on element by parent's PROP/PROP_SYNC bindings)
+		// Step 1.3: Inject parent props (stored on element by parent's PROP/PROP_SYNC bindings).
+		//
+		// Prop contract: bare `:prop` is ISOLATED one-way — primitives copy
+		// down, objects arrive as deep clones (re-cloned on every parent
+		// push), so a child can never mutate parent state through a prop;
+		// it emits events to request changes. `:prop.share` is LIVE — the
+		// parent's object by reference, primitives kept in sync both ways
+		// through the dz:prop-sync bridge.
 		if (this._props) {
 			Object.assign(this.component.data, this._props);
 		}
@@ -248,9 +253,10 @@ class DzComponent extends HTMLElement {
 		this.component.data.$refs = {};
 
 		// Step 1.5: Inject route data if this component was created by the router
-		if (this._routeParams) {
+		if (this._routeParams || this._routeQuery) {
 			this.component.data.$route = {
-				params: this._routeParams,
+				params: this._routeParams || {},
+				query: this._routeQuery || {},
 				path: window.location.pathname
 			};
 		}
@@ -308,6 +314,19 @@ class DzComponent extends HTMLElement {
 			const result = this.component.onCreate.call(this.component.proxy);
 			if (result instanceof Promise) {
 				await result;
+				// Guard: element may have been removed while $created was
+				// fetching. Without this, mount would finish on a detached
+				// element, set isMounted AFTER disconnectedCallback already
+				// no-op'd, and leak the manager + registry instance count.
+				if (!this.isConnected) {
+					if (this.component._computedManager) {
+						this.component._computedManager.destroy();
+						this.component._computedManager = null;
+					}
+					unregisterUpdateCallback(this.component.data);
+					this._loading = null;
+					return;
+				}
 			}
 		}
 
@@ -336,273 +355,17 @@ class DzComponent extends HTMLElement {
 
 		this.component.root = this.shadowRoot;
 
-		// Step 6: Apply bindings (initial render)
-		// Variable-length bytecode: [type, pathLen, ...path, ...data]
-		// EVAL types include deps: [type, pathLen, ...path, evalIdx, depsLen, ...depIndices]
-		const { strings, code } = this.component.binding;
-
-		let offset = 0;
-		while (offset < code.length) {
-			const bindingType = code[offset];
-			const pathLen = code[offset + 1];
-
-			// Extract path from bytecode
-			const path = [];
-			for (let i = 0; i < pathLen; i++) {
-				path.push(code[offset + 2 + i]);
-			}
-
-			// Data starts after path
-			const dataOffset = offset + 2 + pathLen;
-
-			// Get node via tree path
-			const bindNode = getNodeByPath(this.component.root, path);
-
-			// Entry length will be calculated per-type (EVAL types have variable deps)
-			let entryLen;
-
-			if (bindNode) {
-				switch (bindingType) {
-					case BindingType.TEXT: {
-						const propIdx = code[dataOffset];
-						const prop = strings[propIdx];
-						bindNode.textContent = this.component.proxy[prop];
-
-						addBinding(this.component.proxy, prop, bindNode, {
-							type: 'text',
-							applyFn: applyText
-						});
-						entryLen = 2 + pathLen + 1;
-						break;
-					}
-					case BindingType.TEXT_EVAL: {
-						// Format: [type, pathLen, ...path, evalIdx, depsLen, ...depIndices]
-						const evalIdx = code[dataOffset];
-						const depsLen = code[dataOffset + 1];
-						const evalFn = this.component.eval[evalIdx];
-						bindNode.textContent = evalFn.call(this.component.proxy);
-
-						// Register binding for each dependency (read from bytecode)
-						for (let i = 0; i < depsLen; i++) {
-							const depIdx = code[dataOffset + 2 + i];
-							const dep = strings[depIdx];
-							addBinding(this.component.proxy, dep, bindNode, {
-								type: 'text-eval',
-								evalFn,
-								applyFn: (_, b) => { b.node.textContent = b.evalFn.call(this.component.proxy); }
-							});
-						}
-						entryLen = 2 + pathLen + 2 + depsLen; // +2 for evalIdx, depsLen
-						break;
-					}
-					case BindingType.ATTR: {
-						const attrIdx = code[dataOffset];
-						const propIdx = code[dataOffset + 1];
-						const attr = strings[attrIdx];
-						const prop = strings[propIdx];
-
-						const parsed = parseDirectiveName(attr);
-						if (parsed) {
-							const directive = getDirective(parsed.name);
-							const value = this.component.proxy[prop];
-							const dBinding = createDirectiveBinding(bindNode, value, { modifiers: parsed.modifiers });
-							callDirectiveHook('created', directive, bindNode, dBinding);
-							this.component.directives.push({ el: bindNode, directive, binding: dBinding, prop });
-							this.component._deferredMounts.push({ el: bindNode, directive, binding: dBinding });
-
-							if (directive.updated) {
-								addBinding(this.component.proxy, prop, bindNode, {
-									type: 'directive',
-									directiveRef: directive,
-									directiveBinding: dBinding,
-									applyFn: (newValue, b) => {
-										b.directiveBinding.oldValue = b.directiveBinding.value;
-										b.directiveBinding.value = newValue;
-										callDirectiveHook('updated', b.directiveRef, b.node, b.directiveBinding);
-									}
-								});
-							}
-						} else {
-							const value = this.component.proxy[prop];
-							const isBool = typeof value === 'boolean';
-							if (isBool) {
-								if (value) bindNode.setAttribute(attr, '');
-								else bindNode.removeAttribute(attr);
-							} else {
-								setAttrMerged(bindNode, attr, value);
-							}
-							addBinding(this.component.proxy, prop, bindNode, {
-								type: 'attr',
-								attributeName: attr,
-								applyFn: isBool ? applyBoolAttr : applyAttr
-							});
-						}
-						entryLen = 2 + pathLen + 2;
-						break;
-					}
-					case BindingType.ATTR_EVAL: {
-						// Format: [type, pathLen, ...path, attrIdx, evalIdx, depsLen, ...depIndices]
-						const attrIdx = code[dataOffset];
-						const evalIdx = code[dataOffset + 1];
-						const depsLen = code[dataOffset + 2];
-						const attr = strings[attrIdx];
-						const evalFn = this.component.eval[evalIdx];
-
-						const parsed = parseDirectiveName(attr);
-						if (parsed) {
-							const directive = getDirective(parsed.name);
-							const value = evalFn.call(this.component.proxy);
-							const dBinding = createDirectiveBinding(bindNode, value, { modifiers: parsed.modifiers });
-							callDirectiveHook('created', directive, bindNode, dBinding);
-							this.component.directives.push({ el: bindNode, directive, binding: dBinding });
-							this.component._deferredMounts.push({ el: bindNode, directive, binding: dBinding });
-
-							if (directive.updated) {
-								for (let i = 0; i < depsLen; i++) {
-									const depIdx = code[dataOffset + 3 + i];
-									const dep = strings[depIdx];
-									addBinding(this.component.proxy, dep, bindNode, {
-										type: 'directive',
-										directiveRef: directive,
-										directiveBinding: dBinding,
-										evalFn,
-										applyFn: (_, b) => {
-											b.directiveBinding.oldValue = b.directiveBinding.value;
-											b.directiveBinding.value = b.evalFn.call(this.component.proxy);
-											callDirectiveHook('updated', b.directiveRef, b.node, b.directiveBinding);
-										}
-									});
-								}
-							}
-						} else {
-							const evalValue = evalFn.call(this.component.proxy);
-							const isBool = typeof evalValue === 'boolean';
-							if (isBool) {
-								if (evalValue) bindNode.setAttribute(attr, '');
-								else bindNode.removeAttribute(attr);
-							} else {
-								setAttrMerged(bindNode, attr, evalValue);
-							}
-							for (let i = 0; i < depsLen; i++) {
-								const depIdx = code[dataOffset + 3 + i];
-								const dep = strings[depIdx];
-								addBinding(this.component.proxy, dep, bindNode, {
-									type: 'attr-eval',
-									attributeName: attr,
-									evalFn,
-									applyFn: isBool
-										? (_, b) => {
-											const v = b.evalFn.call(this.component.proxy);
-											if (v) b.node.setAttribute(b.attributeName, '');
-											else b.node.removeAttribute(b.attributeName);
-										}
-										: (_, b) => { setAttrMerged(b.node, b.attributeName, b.evalFn.call(this.component.proxy)); }
-								});
-							}
-						}
-						entryLen = 2 + pathLen + 3 + depsLen; // +3 for attrIdx, evalIdx, depsLen
-						break;
-					}
-					case BindingType.TWO_WAY: {
-						const refIdx = code[dataOffset];
-						const isDotted = code[dataOffset + 1] === 1;
-						const proxy = this.component.proxy;
-						let bindTarget, bindKey;
-
-						if (isDotted) {
-							const accessor = this.component.eval[refIdx];
-							bindTarget = accessor.target.call(proxy);
-							bindKey = accessor.key;
-						} else {
-							bindTarget = proxy;
-							bindKey = strings[refIdx];
-						}
-
-						bindNode.value = bindTarget[bindKey];
-						const eventName = (bindNode.tagName === 'SELECT' || bindNode.type === 'checkbox' || bindNode.type === 'radio') ? 'change' : 'input';
-						bindNode.addEventListener(eventName, (e) => {
-							bindTarget[bindKey] = e.target.value;
-						});
-
-						addBinding(bindTarget, bindKey, bindNode, {
-							type: 'two-way',
-							applyFn: applyValue
-						});
-						entryLen = 2 + pathLen + 2;
-						break;
-					}
-					case BindingType.EVENT: {
-						const eventConfigIdx = code[dataOffset + 1];
-						const eventConfig = def.event[eventConfigIdx];
-						const [eventName, methodName] = eventConfig;
-
-						bindNode.addEventListener(eventName, (e) => {
-							try { this.component.proxy[methodName](e); }
-							catch (err) { logger.error(`Error in event handler ${methodName}`, err); }
-						});
-						entryLen = 2 + pathLen + 2;
-						break;
-					}
-					case BindingType.PROP: {
-						const propNameIdx = code[dataOffset];
-						const sourceIdx = code[dataOffset + 1];
-						const propName = strings[propNameIdx];
-						const source = strings[sourceIdx];
-
-						if (!bindNode._props) bindNode._props = {};
-						bindNode._props[propName] = this.component.proxy[source];
-
-						addBinding(this.component.proxy, source, bindNode, {
-							type: 'prop',
-							propName,
-							applyFn: applyPropValue
-						});
-						entryLen = 2 + pathLen + 2;
-						break;
-					}
-					case BindingType.PROP_SYNC: {
-						const propNameIdx = code[dataOffset];
-						const sourceIdx = code[dataOffset + 1];
-						const propName = strings[propNameIdx];
-						const source = strings[sourceIdx];
-
-						if (!bindNode._props) bindNode._props = {};
-						bindNode._props[propName] = this.component.proxy[source];
-
-						if (!bindNode._syncProps) bindNode._syncProps = {};
-						bindNode._syncProps[propName] = source;
-
-						addBinding(this.component.proxy, source, bindNode, {
-							type: 'prop',
-							propName,
-							applyFn: applyPropValue
-						});
-
-						bindNode.addEventListener('dz:prop-sync', (e) => {
-							if (e.detail.prop === propName) {
-								this.component.proxy[source] = e.detail.value;
-							}
-						});
-						entryLen = 2 + pathLen + 2;
-						break;
-					}
-					default:
-						entryLen = 2 + pathLen + 1;
-				}
-			} else {
-				// Node not found - still need to calculate entry length to advance
-				entryLen = 2 + pathLen + getBindingDataLength(bindingType);
-				if (bindingType === BindingType.TEXT_EVAL) {
-					const depsLen = code[dataOffset + 1];
-					entryLen += depsLen;
-				} else if (bindingType === BindingType.ATTR_EVAL) {
-					const depsLen = code[dataOffset + 2];
-					entryLen += depsLen;
-				}
-			}
-
-			offset += entryLen;
+		// Step 6: Apply bindings (initial render).
+		// The bytecode is decoded once per component TYPE (cached on the def)
+		// and applied per instance via the shared tree applier — the same
+		// decode/apply pair used by :for rows and :if chain items.
+		if (!def._descs) {
+			def._descs = decodeBindingDescs(this.component.binding, this.component.eval, def.event);
 		}
+		const applied = applyDescsToTree(this.component.root, def._descs, this.component.proxy);
+		this.component.bindings = applied.bindings;
+		this.component.directives = applied.directiveInstances;
+		this.component._deferredMounts = applied.deferredMounts;
 
 		// Step 7.5: Process dynamics (:for, :if)
 		if (def.dynamics && def.dynamics.length > 0) {
@@ -636,12 +399,14 @@ class DzComponent extends HTMLElement {
 		componentRegistry.registerInstance(type, this.component.instanceId);
 
 		this.component.isMounted = true;
+		this._loading = null;
 
 		// Step 10: Signal child components to initialize (after isMounted = true)
 		this.shadowRoot.dispatchEvent(new CustomEvent('dz:children-init'));
 
 	  } catch (error) {
 		this._mountError = true;
+		this._loading = null;
 		handleComponentError(this, error, 'mount');
 	  }
 	}
@@ -680,6 +445,9 @@ class DzComponent extends HTMLElement {
 					: () => resolveDottedPath(this.component.proxy, dynamic.source);
 				const collection = resolveSource();
 				if (collection) {
+					// Stamp/descs cached on the def — shared across instances
+					// of this component type; the spread carries them over.
+					ensureForStamp(dynamic);
 					const structure = {
 						...dynamic,
 						instances: [],
@@ -794,6 +562,16 @@ class DzComponent extends HTMLElement {
 			}
 		}
 
+		// Remove registered bindings from the reactivity maps. Bindings on the
+		// component's own data would be GC'd with it, but two-way/dotted
+		// bindings can target long-lived shared objects — without explicit
+		// removal those entries accumulate across mount/unmount cycles.
+		if (this.component.bindings) {
+			for (let i = 0, len = this.component.bindings.length; i < len; i++) {
+				removeBinding(this.component.bindings[i]);
+			}
+		}
+
 		// Cleanup computed manager (removes from WeakMap registry)
 		if (this.component._computedManager) {
 			this.component._computedManager.destroy();
@@ -824,10 +602,12 @@ class DzComponent extends HTMLElement {
 			unregisterUpdateCallback(this.component.data);
 		}
 
-		// Clear props/sync state
+		// Clear props/sync state. _loading is reset so a reconnect (DOM moves
+		// fire disconnected + connected callbacks) can mount again.
 		this._props = null;
 		this._syncProps = null;
 		this._propUpdating = false;
+		this._loading = null;
 
 		// Clear Shadow DOM
 		this.shadowRoot.innerHTML = '';
@@ -849,6 +629,7 @@ class DzComponent extends HTMLElement {
 			onError: null,
 			binding: null,
 			eval: null,
+			bindings: null,
 			root: null,
 			dynamics: [],
 			directives: [],

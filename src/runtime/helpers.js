@@ -9,8 +9,6 @@
  * - DOM Utilities
  */
 
-import { TYPEOF } from './constants.js';
-
 // ============================================================================
 // Type Checks
 // ============================================================================
@@ -19,7 +17,7 @@ import { TYPEOF } from './constants.js';
  * Checks if parameter is an object (not null)
  */
 export function isObject(obj) {
-	return (typeof obj === TYPEOF.OBJECT && obj !== null);
+	return (typeof obj === 'object' && obj !== null);
 }
 
 // ============================================================================
@@ -27,12 +25,17 @@ export function isObject(obj) {
 // ============================================================================
 
 /**
- * Deep clone an object, handling Date, Set, Map, and Arrays
+ * Deep clone an object, handling Date, Set, Map, and Arrays.
+ * Cycle-safe: a structure that references itself clones to a structure
+ * whose copies reference each other the same way.
  */
-export function deepClone(obj) {
+export function deepClone(obj, seen = new WeakMap()) {
 	if (obj === null || typeof obj !== "object") {
 		return obj;
 	}
+
+	const cached = seen.get(obj);
+	if (cached) return cached;
 
 	if (obj instanceof Date) {
 		return new Date(obj.getTime());
@@ -40,22 +43,25 @@ export function deepClone(obj) {
 
 	if (obj instanceof Set) {
 		const copy = new Set();
-		for (const item of obj) copy.add(deepClone(item));
+		seen.set(obj, copy);
+		for (const item of obj) copy.add(deepClone(item, seen));
 		return copy;
 	}
 
 	if (obj instanceof Map) {
 		const copy = new Map();
-		for (const [key, value] of obj) copy.set(deepClone(key), deepClone(value));
+		seen.set(obj, copy);
+		for (const [key, value] of obj) copy.set(deepClone(key, seen), deepClone(value, seen));
 		return copy;
 	}
 
 	const copy = Array.isArray(obj) ? [] : {};
+	seen.set(obj, copy);
 
 	// Copy regular properties
 	for (const key in obj) {
 		if (obj.hasOwnProperty(key)) {
-			copy[key] = deepClone(obj[key]);
+			copy[key] = deepClone(obj[key], seen);
 		}
 	}
 

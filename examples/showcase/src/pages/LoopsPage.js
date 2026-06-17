@@ -33,7 +33,7 @@ export default Deezul.Component({
             <h2>Live Demo — Todo List</h2>
             <div class="demo-box">
                 <div class="demo-controls">
-                    <input :model="newTodo" placeholder="Add a todo..." class="demo-input" />
+                    <input :bind="newTodo" placeholder="Add a todo..." class="demo-input" />
                     <button @click="addTodo" class="demo-btn">Add</button>
                 </div>
                 <ul class="todo-list">

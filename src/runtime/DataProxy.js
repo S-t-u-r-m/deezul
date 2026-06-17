@@ -41,6 +41,27 @@ export const PARENT_KEY = Symbol('parentKey');
 
 export const REBINDABLE = Symbol('rebindable');
 export const REBIND = Symbol('rebind');
+export const SKIP_PROXY = Symbol('skipProxy');
+
+/**
+ * Mark an object so the reactivity system returns it as-is instead of
+ * wrapping it in a proxy. Escape hatch for large read-only datasets where
+ * per-property proxy traps and child-proxy wrapping are measurable —
+ * mutations to a markRaw'd object are invisible to bindings/computed.
+ */
+export function markRaw(obj) {
+    if (obj !== null && typeof obj === 'object') obj[SKIP_PROXY] = true;
+    return obj;
+}
+
+/**
+ * Unwrap a reactive proxy to its raw target (identity for non-proxies).
+ * Useful for handing data to code that shouldn't pay proxy overhead
+ * (serialization, hot read loops) — mutate through the proxy, read raw.
+ */
+export function toRaw(value) {
+    return (value && value[TARGET]) || value;
+}
 
 // ============================================================================
 // CHANGE CHAIN
@@ -147,6 +168,27 @@ export function flushSync() {
     if (flushScheduled) flush();
 }
 
+let nextTickResolvers = [];
+
+/**
+ * Returns a promise that resolves after the pending reactive flush has
+ * applied its changes to the DOM (or on the next microtask if nothing is
+ * pending). The standard way to read the DOM after a state change:
+ *
+ *   this.items.push(item);
+ *   await Deezul.nextTick();
+ *   measure(this.$refs.list);
+ */
+export function nextTick() {
+    return new Promise(resolve => {
+        if (!flushScheduled) {
+            queueMicrotask(resolve);
+            return;
+        }
+        nextTickResolvers.push(resolve);
+    });
+}
+
 function flush() {
     // Snapshot and reset BEFORE applying. Re-entrant changes (a watcher that
     // mutates) populate a fresh chain that flushes on the next microtask.
@@ -156,29 +198,36 @@ function flush() {
     mutationLog = [];
     flushScheduled = false;
 
-    if (!flushHandlers) return;
+    if (flushHandlers) {
+        const { applyChanges, applyMutation, afterFlush } = flushHandlers;
 
-    const { applyChanges, applyMutation, afterFlush } = flushHandlers;
-
-    // Phase A: replay collection mutations in original order.
-    if (applyMutation) {
-        for (let i = 0, len = localMutations.length; i < len; i++) {
-            const m = localMutations[i];
-            applyMutation(m.target, m.type, m.meta, m.proxyInstance);
+        // Phase A: replay collection mutations in original order.
+        if (applyMutation) {
+            for (let i = 0, len = localMutations.length; i < len; i++) {
+                const m = localMutations[i];
+                applyMutation(m.target, m.type, m.meta, m.proxyInstance);
+            }
         }
+
+        // Phase B: apply property changes per-target. Coalesced no-ops
+        // (entry.value === entry.oldValue without `force`) are skipped inline
+        // by the consumer's apply pass.
+        if (applyChanges) {
+            for (const [target, propertyMap] of localChain) {
+                applyChanges(target, propertyMap);
+            }
+        }
+
+        // Phase C: post-flush hook (e.g., $updated lifecycle callbacks).
+        if (afterFlush) afterFlush(localChain, localMutations);
     }
 
-    // Phase B: apply property changes per-target. Coalesced no-ops
-    // (entry.value === entry.oldValue without `force`) are skipped inline
-    // by the consumer's apply pass.
-    if (applyChanges) {
-        for (const [target, propertyMap] of localChain) {
-            applyChanges(target, propertyMap);
-        }
+    // Phase D: wake nextTick() waiters — bindings and dynamics have applied.
+    if (nextTickResolvers.length > 0) {
+        const resolvers = nextTickResolvers;
+        nextTickResolvers = [];
+        for (let i = 0, len = resolvers.length; i < len; i++) resolvers[i]();
     }
-
-    // Phase C: post-flush hook (e.g., $updated lifecycle callbacks).
-    if (afterFlush) afterFlush(localChain, localMutations);
 }
 
 // ============================================================================
@@ -197,6 +246,12 @@ function flush() {
 export function createProxyFactory(handlers) {
     const proxyCache = new WeakMap();
 
+    // parentProxy/parentKey are captured ONCE, when the first proxy for a
+    // target is created. If the same object is later moved to a different
+    // key or parent (`state.b = state.a; delete state.a`), mutation
+    // notifications still walk to the original location. Re-parenting on
+    // every get would cost a write per nested read; the trade-off is
+    // documented here instead.
     function createProxy(obj, parentProxy = null, parentKey = null) {
         const cached = proxyCache.get(obj);
         if (cached) return cached;
@@ -205,11 +260,13 @@ export function createProxyFactory(handlers) {
             throw new Error('createProxy requires an object or collection');
         }
 
+        // ctor can be undefined for Object.create(null) objects — they fall
+        // through to the Object handler like any unknown constructor.
         const ctor = obj.constructor;
         let typeHandler = handlers.get(ctor);
         if (!typeHandler) typeHandler = handlers.get(Object);
         if (!typeHandler) {
-            throw new Error(`No handler found for constructor: ${ctor.name} (and no Object fallback handler)`);
+            throw new Error(`No handler found for constructor: ${ctor ? ctor.name : '(none)'} (and no Object fallback handler)`);
         }
 
         let proxyInstance = null;
@@ -239,6 +296,7 @@ export function createProxyFactory(handlers) {
                 const value = typeHandler.get(target, key, proxyInstance);
 
                 if (isObject(value) && !value[IS_PROXY]) {
+                    if (value[SKIP_PROXY]) return value;
                     return createProxy(value, proxyInstance, String(key));
                 }
 

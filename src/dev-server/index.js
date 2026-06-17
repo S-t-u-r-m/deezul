@@ -41,11 +41,57 @@ const MIME = {
 const sseClients = new Set();
 const sendReload = () => { for (const res of sseClients) res.write('data: reload\n\n'); };
 
+/**
+ * Watch a directory tree for .js changes. Tries native fs.watch (recursive)
+ * first; recursive watching is unavailable on network/mapped drives on
+ * Windows (FSWatcher dies with UNKNOWN errno -4094), so on failure we fall
+ * back to polling file mtimes once a second.
+ */
+function watchSrc(dir, onChange) {
+    const POLL_MS = 1000;
+
+    const startPolling = () => {
+        console.log('[watch] fs.watch unavailable (network drive?) — polling for changes instead');
+        const mtimes = new Map();
+        const scan = (d, fire) => {
+            let entries;
+            try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+            for (const entry of entries) {
+                const full = path.join(d, entry.name);
+                if (entry.isDirectory()) {
+                    scan(full, fire);
+                } else if (entry.name.endsWith('.js')) {
+                    let mtime;
+                    try { mtime = fs.statSync(full).mtimeMs; } catch { continue; }
+                    const prev = mtimes.get(full);
+                    mtimes.set(full, mtime);
+                    if (fire && prev !== mtime) onChange(full);
+                }
+            }
+        };
+        scan(dir, false); // prime mtimes without firing
+        setInterval(() => scan(dir, true), POLL_MS).unref();
+    };
+
+    try {
+        const watcher = fs.watch(dir, { recursive: true }, (_e, filename) => {
+            if (filename && filename.endsWith('.js')) onChange(filename);
+        });
+        // The UNKNOWN error arrives asynchronously — without this handler it
+        // crashes the whole process.
+        watcher.on('error', () => {
+            watcher.close();
+            startPolling();
+        });
+    } catch {
+        startPolling();
+    }
+}
+
 // A save just pings the browser; the next request recompiles on the fly.
 let debounce = null;
 if (fs.existsSync(SRC_DIR)) {
-    fs.watch(SRC_DIR, { recursive: true }, (_e, filename) => {
-        if (!filename || !filename.endsWith('.js')) return;
+    watchSrc(SRC_DIR, () => {
         clearTimeout(debounce);
         debounce = setTimeout(sendReload, 100);
     });

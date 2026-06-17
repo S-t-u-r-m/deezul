@@ -4,9 +4,12 @@
  * Features:
  * - History API navigation (no hash)
  * - Nested routes with parent layouts
- * - Route params (:id, :slug, etc.)
+ * - Route params (:id, :slug, etc.) and query strings ($route.query)
+ * - Wildcard routes: path: '/docs/*' (remainder in params.pathMatch)
+ * - Redirects: { path: '/old', redirect: '/new' } (string or (to) => path)
  * - beforeNavigate guard with next() pattern
  * - Route matching with Map for O(1) lookup
+ * - Scroll restoration: to top on push navigation, saved position on back/forward
  * - Style cascade from parent routes
  * - layouts: ['layout1', 'layout2'] - Wraps component in layout components
  * - basePath: '/subdir' - Base path prefix for deployment on subpaths (e.g. GitHub Pages)
@@ -18,7 +21,6 @@
  */
 
 import { createLogger } from './Logger.js';
-import { TYPEOF } from './constants.js';
 
 const logger = createLogger('Router');
 
@@ -33,6 +35,7 @@ class Router {
         this.routeMap = new Map();
         this.currentRoute = null;
         this.currentParams = {};
+        this.currentQuery = {};
         this.beforeNavigate = options.beforeNavigate || null;
         this.afterNavigate = options.afterNavigate || null;
         this.isInitialized = false;
@@ -58,6 +61,13 @@ class Router {
         // Initialize routes if provided
         if (options.routes) {
             this.registerRoutes(options.routes);
+        }
+
+        // Scroll restoration is handled by the router: position is saved into
+        // the history entry on push and restored on back/forward.
+        this._pendingScroll = null;
+        if (window.history && typeof window.history.scrollRestoration === 'string') {
+            window.history.scrollRestoration = 'manual';
         }
 
         // Bind event handlers (stored for cleanup in destroy())
@@ -116,8 +126,8 @@ class Router {
             const pattern = this._createRoutePattern(fullPath);
             routeEntry.pattern = pattern;
 
-            // O(1) lookup for non-param routes
-            if (!fullPath.includes(':')) {
+            // O(1) lookup for non-param, non-wildcard routes
+            if (!fullPath.includes(':') && !fullPath.includes('*')) {
                 this.routeMap.set(fullPath, routeEntry);
             }
 
@@ -140,7 +150,7 @@ class Router {
             return null;
         }
         return layouts.filter(layout => {
-            if (typeof layout === TYPEOF.STRING) return true;
+            if (typeof layout === 'string') return true;
             logger.warn('Invalid layout entry (must be string), skipping', { layout });
             return false;
         });
@@ -175,6 +185,12 @@ class Router {
             .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, (match, paramName) => {
                 paramNames.push(paramName);
                 return '([^/]+)';
+            })
+            // Wildcard segment: '/docs/*' matches any subpath; the matched
+            // remainder lands in params.pathMatch.
+            .replace(/\\\*/g, () => {
+                paramNames.push('pathMatch');
+                return '(.*)';
             });
         regexStr = '^' + regexStr + '$';
         return { regex: new RegExp(regexStr), paramNames };
@@ -254,6 +270,14 @@ class Router {
      * @returns {Promise<boolean>}
      */
     async navigate(path, options = {}) {
+        // Split the query string off before matching — routes match on the
+        // pathname only; the parsed query is exposed as $route.query.
+        let queryString = '';
+        const qIdx = path.indexOf('?');
+        if (qIdx !== -1) {
+            queryString = path.slice(qIdx + 1);
+            path = path.slice(0, qIdx) || '/';
+        }
         path = this._normalizePath(path);
 
         // Re-entrancy guard: skip if already navigating to same path
@@ -276,8 +300,27 @@ class Router {
             this.isNotFound = false;
 
             const { route, params } = matched;
-            const from = this.currentRoute ? { ...this.currentRoute, params: this.currentParams } : null;
-            const to = { ...route, params };
+            const query = queryString ? Object.fromEntries(new URLSearchParams(queryString)) : {};
+
+            // Config redirect: { path: '/old', redirect: '/new' | (to) => path }
+            if (route.redirect !== undefined) {
+                const depth = (options._redirectDepth || 0) + 1;
+                if (depth > 10) {
+                    logger.error('Redirect loop detected, aborting navigation', { path });
+                    return false;
+                }
+                const target = typeof route.redirect === 'function'
+                    ? route.redirect({ ...route, params, query })
+                    : route.redirect;
+                logger.debug('Config redirect', { from: path, to: target });
+                this._navigating = false;
+                return this.navigate(target, { ...options, _redirectDepth: depth });
+            }
+
+            const from = this.currentRoute
+                ? { ...this.currentRoute, params: this.currentParams, query: this.currentQuery }
+                : null;
+            const to = { ...route, params, query };
 
             // Run beforeNavigate guard
             if (this.beforeNavigate) {
@@ -286,17 +329,20 @@ class Router {
                     logger.debug('Navigation cancelled by beforeNavigate');
                     return false;
                 }
-                if (typeof result === TYPEOF.STRING) {
+                if (typeof result === 'string') {
                     logger.debug('Redirecting to', { path: result });
                     this._navigating = false; // Allow redirect to proceed
                     return this.navigate(result, options);
                 }
             }
 
-            this._updateHistory(path, {}, options.replace);
+            this._updateHistory(path, {}, options.replace, queryString);
             this.currentRoute = route;
             this.currentParams = params;
-            this._navigatedPath = path;
+            this.currentQuery = query;
+            // Include the query in the navigated path so a query-only change
+            // (/search?q=a → /search?q=b) re-renders the leaf component.
+            this._navigatedPath = queryString ? `${path}?${queryString}` : path;
 
             // Compute divergence BEFORE notifying listeners
             this._computeRouteChainAndDivergence();
@@ -306,11 +352,29 @@ class Router {
                 this.afterNavigate(to, from);
             }
 
+            this._applyScroll();
+
             logger.info('Navigation complete', { path, component: route.component, params });
             return true;
         } finally {
             this._navigating = false;
         }
+    }
+
+    /**
+     * Apply scroll after a successful navigation: restore the saved position
+     * for back/forward (captured in _handlePopState), otherwise scroll to
+     * top. Deferred a tick because route components mount asynchronously —
+     * best effort; the browser clamps if the new content is shorter.
+     */
+    _applyScroll() {
+        if (typeof window.scrollTo !== 'function') return;
+        const saved = this._pendingScroll;
+        this._pendingScroll = null;
+        setTimeout(() => {
+            if (saved) window.scrollTo(saved.x || 0, saved.y || 0);
+            else window.scrollTo(0, 0);
+        }, 0);
     }
 
     /**
@@ -336,6 +400,7 @@ class Router {
 
         this.currentRoute = notFoundRoute;
         this.currentParams = {};
+        this.currentQuery = {};
         this._navigatedPath = path;
 
         // Clear route chains so navigating away from 404 triggers full re-render
@@ -388,27 +453,30 @@ class Router {
     _runBeforeNavigate(to, from) {
         return new Promise((resolve) => {
             let resolved = false;
+            let guardTimer = null;
             const next = (redirectPath) => {
                 if (resolved) {
                     logger.warn('next() called multiple times in beforeNavigate');
                     return;
                 }
                 resolved = true;
+                clearTimeout(guardTimer);
                 if (redirectPath === undefined) {
                     resolve(true);
-                } else if (typeof redirectPath === TYPEOF.STRING) {
+                } else if (typeof redirectPath === 'string') {
                     resolve(redirectPath);
                 } else {
                     resolve(true);
                 }
             };
             this.beforeNavigate(to, from, next);
-            setTimeout(() => {
-                if (!resolved) {
+            if (!resolved) {
+                guardTimer = setTimeout(() => {
                     logger.warn('beforeNavigate did not call next() - cancelling navigation');
+                    resolved = true;
                     resolve(false);
-                }
-            }, 5000);
+                }, 5000);
+            }
         });
     }
 
@@ -417,8 +485,10 @@ class Router {
      * @param {PopStateEvent} e
      */
     _handlePopState(e) {
-        const path = this._stripBase(window.location.pathname);
+        const path = this._stripBase(window.location.pathname) + window.location.search;
         logger.debug('Popstate', { path, state: e.state });
+        // Restore the scroll position saved into this history entry (if any)
+        this._pendingScroll = (e.state && e.state._scroll) || null;
         this.navigate(path, { replace: true });
     }
 
@@ -492,6 +562,7 @@ class Router {
         return {
             route: this.currentRoute,
             params: this.currentParams,
+            query: this.currentQuery,
             path: this.currentRoute ? this.currentRoute.fullPath : null
         };
     }
@@ -624,12 +695,21 @@ class Router {
      * @param {Object} state
      * @param {boolean} replace
      */
-    _updateHistory(path, state = {}, replace = false) {
-        const url = this._addBase(path);
+    _updateHistory(path, state = {}, replace = false, queryString = '') {
+        const url = this._addBase(path) + (queryString ? `?${queryString}` : '');
         const historyState = { path, ...state };
         if (replace) {
             window.history.replaceState(historyState, '', url);
         } else {
+            // Save the scroll position into the entry we're leaving, so
+            // back/forward can restore it.
+            try {
+                const current = window.history.state || {};
+                window.history.replaceState(
+                    { ...current, _scroll: { x: window.scrollX || 0, y: window.scrollY || 0 } },
+                    '', window.location.href
+                );
+            } catch (e) { /* history state not writable (sandboxed iframe) */ }
             window.history.pushState(historyState, '', url);
         }
     }
@@ -639,7 +719,7 @@ class Router {
      */
     init() {
         this.isInitialized = true;
-        const path = this._stripBase(window.location.pathname);
+        const path = this._stripBase(window.location.pathname) + window.location.search;
         logger.info('Initializing with current path', { path });
         this.navigate(path, { replace: true });
     }
@@ -672,12 +752,15 @@ export function getRouter() {
 }
 
 /**
- * Create a new router instance and set as singleton
+ * Create a new router instance and set as singleton.
+ * Dispatches 'dz:router-ready' so <router-component> elements that connected
+ * before the router existed can initialize without polling.
  * @param {Object} options
  * @returns {Router}
  */
 export function createRouter(options) {
     routerInstance = new Router(options);
+    document.dispatchEvent(new CustomEvent('dz:router-ready'));
     return routerInstance;
 }
 

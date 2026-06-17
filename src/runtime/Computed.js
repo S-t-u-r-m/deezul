@@ -106,6 +106,39 @@ export function getManager(dataTarget) {
 	return managerMap.get(dataTarget) || null;
 }
 
+/**
+ * Reverse interest index: rawTarget → Set<ComputedManager> whose computed
+ * properties currently depend on that target. Unlike managerMap (1:1, the
+ * manager that OWNS a data root), this is many-to-many: a shared object — a
+ * data store, a model passed between components — can be a dependency of
+ * computed properties in several components at once, and every one of them
+ * must be invalidated when it changes. Maintained by _updateDepIndex.
+ */
+const interestedManagers = new WeakMap();
+
+/**
+ * Get the managers whose computed properties depend on a target.
+ * @param {Object} target - Raw data target
+ * @returns {Set<ComputedManager>|null}
+ */
+export function getInterestedManagers(target) {
+	return interestedManagers.get(target) || null;
+}
+
+function addManagerInterest(target, manager) {
+	let set = interestedManagers.get(target);
+	if (!set) {
+		set = new Set();
+		interestedManagers.set(target, set);
+	}
+	set.add(manager);
+}
+
+function removeManagerInterest(target, manager) {
+	const set = interestedManagers.get(target);
+	if (set) set.delete(manager);
+}
+
 // ============================================================================
 // COMPUTED MANAGER
 // ============================================================================
@@ -141,25 +174,68 @@ export class ComputedManager {
 	// ========================================================================
 
 	/**
-	 * Initialize computed property metadata from definitions
-	 * @param {Object} defs - { propName: getter, ... }
+	 * Initialize computed property metadata from definitions.
+	 * Accepts plain getter functions or { get, set } objects:
+	 *
+	 *   computed: {
+	 *       fullName: {
+	 *           get() { return this.first + ' ' + this.last; },
+	 *           set(v) { [this.first, this.last] = v.split(' '); }
+	 *       }
+	 *   }
+	 *
+	 * @param {Object} defs - { propName: getter | { get, set }, ... }
 	 */
 	setupComputed(defs) {
 		const entries = Object.entries(defs);
 		for (let i = 0, len = entries.length; i < len; i++) {
-			const [name, getter] = entries[i];
-			if (typeof getter !== 'function') {
-				logger.warn(`Computed "${name}" is not a function, skipping`);
+			const [name, def] = entries[i];
+			let getter, setter = null;
+			if (typeof def === 'function') {
+				getter = def;
+			} else if (def && typeof def.get === 'function') {
+				getter = def.get;
+				setter = typeof def.set === 'function' ? def.set : null;
+			} else {
+				logger.warn(`Computed "${name}" is not a function or { get, set } object, skipping`);
 				continue;
 			}
 			this.computed.set(name, {
 				getter,
+				setter,
 				cache: undefined,
 				dirty: true,
 				deps: null
 			});
 		}
 		logger.debug('Computed properties registered', [...this.computed.keys()]);
+	}
+
+	/**
+	 * Check if a computed property declared a setter
+	 * @param {string} name
+	 * @returns {boolean}
+	 */
+	hasSetter(name) {
+		const meta = this.computed.get(name);
+		return !!(meta && meta.setter);
+	}
+
+	/**
+	 * Invoke a computed property's setter (this = componentProxy). The
+	 * setter's writes to data flow through the normal reactive path, which
+	 * invalidates the computed itself like any other dependency change.
+	 * @param {string} name
+	 * @param {*} value
+	 */
+	invokeSetter(name, value) {
+		const meta = this.computed.get(name);
+		if (!meta || !meta.setter) return;
+		try {
+			meta.setter.call(this.componentProxy, value);
+		} catch (error) {
+			logger.error(`Error in setter for computed "${name}"`, error);
+		}
 	}
 
 	/**
@@ -264,7 +340,10 @@ export class ComputedManager {
 						if (computedSet.size === 0) targetMap.delete(key);
 					}
 				}
-				if (targetMap.size === 0) this.depIndex.delete(target);
+				if (targetMap.size === 0) {
+					this.depIndex.delete(target);
+					removeManagerInterest(target, this);
+				}
 			}
 		}
 		if (newDeps) {
@@ -273,6 +352,7 @@ export class ComputedManager {
 				if (!targetMap) {
 					targetMap = new Map();
 					this.depIndex.set(target, targetMap);
+					addManagerInterest(target, this);
 				}
 				for (const key of keys) {
 					let computedSet = targetMap.get(key);
@@ -351,11 +431,20 @@ export class ComputedManager {
 	// ========================================================================
 
 	/**
-	 * Invoke watcher for a data property change (called from queueUpdate)
+	 * Invoke watcher for a data property change (called from the flush phase).
+	 *
+	 * The target guard matters: this manager is propagated to every nested
+	 * target in the data tree, so without it a watcher on root-level `name`
+	 * would also fire for `state.user.name` or `state.items[3].name` —
+	 * any same-named key anywhere in the tree.
+	 *
+	 * @param {Object} target - Raw data target the change occurred on
 	 * @param {string} key - Property name
 	 * @param {*} newValue - New value
 	 */
-	invokeWatcher(key, newValue) {
+	invokeWatcher(target, key, newValue) {
+		if (target !== this.dataTarget) return;
+
 		const watcher = this.watchers.get(key);
 		if (!watcher) return;
 
@@ -399,6 +488,11 @@ export class ComputedManager {
 	 * Destroy the manager, removing all references for GC
 	 */
 	destroy() {
+		// Withdraw interest registrations — without this, long-lived shared
+		// targets (stores) would keep invalidating a dead manager.
+		for (const target of this.depIndex.keys()) {
+			removeManagerInterest(target, this);
+		}
 		this.computed.clear();
 		this.watchers.clear();
 		this.depIndex.clear();

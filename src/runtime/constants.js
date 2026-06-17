@@ -6,20 +6,6 @@
  */
 
 // ============================================================================
-// JavaScript typeof Result Constants
-// ============================================================================
-
-export const TYPEOF = Object.freeze({
-	OBJECT: 'object',
-	FUNCTION: 'function',
-	STRING: 'string',
-	NUMBER: 'number',
-	BOOLEAN: 'boolean',
-	SYMBOL: 'symbol',
-	UNDEFINED: 'undefined'
-});
-
-// ============================================================================
 // Binding Type Constants (must match compiler output)
 // ============================================================================
 
@@ -53,7 +39,13 @@ export function setAttrMerged(node, attr, value) {
             node._staticClass = node.getAttribute('class') || '';
         }
         const dyn = value == null || value === false ? '' : String(value);
-        node.setAttribute('class', node._staticClass + (dyn && node._staticClass ? ' ' : '') + dyn);
+        const full = node._staticClass + (dyn && node._staticClass ? ' ' : '') + dyn;
+        // Skip writing class="" — the common case for a conditional :class that
+        // resolves to nothing (e.g. every non-selected row in a large list).
+        // removeAttribute is a no-op on a fresh node and correctly clears a
+        // previously-set class on update.
+        if (full) node.setAttribute('class', full);
+        else node.removeAttribute('class');
     } else {
         node.setAttribute(attr, value);
     }
@@ -63,24 +55,62 @@ export function applyBoolAttr(value, b) {
     if (value) b.node.setAttribute(b.attributeName, '');
     else b.node.removeAttribute(b.attributeName);
 }
-export function applyValue(value, b) { b.node.value = value; }
+
+// ============================================================================
+// Two-Way Input Value Access
+// ============================================================================
+
+/**
+ * Write a model value into a form control, respecting the control type:
+ * checkboxes/radios use `checked`, everything else uses `value`.
+ */
+export function setInputValue(node, value) {
+    const type = node.type;
+    if (type === 'checkbox') {
+        node.checked = !!value;
+    } else if (type === 'radio') {
+        node.checked = value != null && node.value === String(value);
+    } else {
+        node.value = value == null ? '' : value;
+    }
+}
+
+/**
+ * Read the model value out of a form control, respecting the control type:
+ * checkboxes report `checked`, number/range inputs coerce to Number
+ * (falling back to the raw string when the field isn't a valid number).
+ */
+export function readInputValue(node) {
+    const type = node.type;
+    if (type === 'checkbox') return node.checked;
+    if (type === 'number' || type === 'range') {
+        if (node.value === '') return '';
+        const n = node.valueAsNumber;
+        return Number.isNaN(n) ? node.value : n;
+    }
+    return node.value;
+}
+
+export function applyValue(value, b) { setInputValue(b.node, value); }
 
 // ============================================================================
 // Path-Based Node Access
 // ============================================================================
 
 /**
- * Navigate to a node using a tree path
+ * Navigate to a node using a tree path.
+ * Returns null when the path runs off the tree (stale path / changed DOM)
+ * so callers can skip the binding instead of crashing mid-walk.
  * @param {Node} root - Root node to start from
  * @param {number[]} path - Array of childNodes indices
- * @returns {Node} Target node
+ * @returns {Node|null} Target node
  */
 export function getNodeByPath(root, path) {
 	let node = root;
-	for (let i = 0, len = path.length; i < len; i++) {
+	for (let i = 0, len = path.length; i < len && node; i++) {
 		node = node.childNodes[path[i]];
 	}
-	return node;
+	return node || null;
 }
 
 // ============================================================================

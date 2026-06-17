@@ -114,9 +114,28 @@ export function processAST(ast, loopVars) {
 
 	/**
 	 * Process text binding {{ expression }}
+	 *
+	 * When `soleChild` is true the binding is the only child of its parent
+	 * element, so its `path` already points at the parent: the runtime sets
+	 * the parent's textContent directly and we emit no <span> wrapper (one
+	 * fewer DOM node per interpolation — a large layout/style win on big
+	 * lists). Otherwise we emit the <span> placeholder so adjacent text/
+	 * bindings keep distinct, path-addressable nodes after innerHTML merging.
 	 */
-	function processBindingNode(node, path) {
+	function processBindingNode(node, path, soleChild = false) {
 		const expr = node.expression;
+
+		// Constant-fold a literal interpolation with no reactive dependency
+		// into static text — no runtime binding. Only when it's the sole child
+		// (adjacent text would merge under innerHTML and break path indexing).
+		if (soleChild) {
+			const lit = parseLiteralExpr(expr);
+			if (lit.ok) {
+				htmlParts.push(escapeHTML(lit.value == null ? '' : String(lit.value)));
+				return;
+			}
+		}
+
 		let isEval = needsEvalFn(expr);
 		const properties = extractPropertyPaths(expr);
 
@@ -143,10 +162,14 @@ export function processAST(ast, loopVars) {
 			isEval
 		});
 
-		// Wrap in <span> to prevent innerHTML text node merging.
-		// Adjacent text + binding would merge into one text node otherwise,
-		// making path-based access impossible.
-		htmlParts.push('<span>\u200B</span>');
+		// Wrap in <span> to prevent innerHTML text node merging. Adjacent
+		// text + binding would merge into one text node otherwise, making
+		// path-based access impossible. Skipped when the binding is the sole
+		// child of its parent \u2014 there is nothing to merge with, so the parent
+		// itself is the bind target.
+		if (!soleChild) {
+			htmlParts.push('<span>\u200B</span>');
+		}
 	}
 
 	/**
@@ -201,7 +224,10 @@ export function processAST(ast, loopVars) {
 				type: DYNAMIC_TYPE.FOR,
 				path,
 				node,
-				...parsed
+				...parsed,
+				// Optional :key="item.id" — expression over the loop variables,
+				// compiled into keyFn for keyed reconciliation.
+				keyExpr: attrs[':key'] || null
 			});
 			addString(parsed.iteratorVar);
 			if (parsed.indexVar) addString(parsed.indexVar);
@@ -289,6 +315,10 @@ export function processAST(ast, loopVars) {
 			if (name.startsWith(':')) {
 				const attrName = name.slice(1);
 
+				// :key is :for metadata (consumed by the loop dynamic), never
+				// an attribute binding.
+				if (attrName === 'key') continue;
+
 				// Two-way binding (:bind="prop" on form elements)
 				if (attrName === 'bind' && isFormElement(tag)) {
 					const isDotted = value.indexOf('.') !== -1;
@@ -306,9 +336,10 @@ export function processAST(ast, loopVars) {
 					continue;
 				}
 
-				// Check for .sync modifier
-				const isSync = attrName.endsWith('.sync');
-				const cleanAttrName = isSync ? attrName.slice(0, -5) : attrName;
+				// Check for .share modifier (live two-way prop); .sync is a
+				// back-compat alias.
+				const isSync = attrName.endsWith('.share') || attrName.endsWith('.sync');
+				const cleanAttrName = isSync ? attrName.slice(0, attrName.lastIndexOf('.')) : attrName;
 
 				addString(cleanAttrName);
 
@@ -329,8 +360,27 @@ export function processAST(ast, loopVars) {
 						isSync
 					});
 				} else {
-					let isEval = needsEvalFn(value);
 					const properties = extractPropertyPaths(value);
+
+					// Constant-fold a literal attribute with no reactive
+					// dependency into static markup — no runtime binding.
+					// Excluded: components (props aren't HTML attributes) and
+					// :class when a static class already exists (merge
+					// semantics). Only true literals fold; a no-dep dynamic
+					// expression like Date.now() keeps its binding.
+					if (!isComponent && properties.length === 0) {
+						const lit = parseLiteralExpr(value);
+						if (lit.ok && !(cleanAttrName === 'class' && attrs['class'] !== undefined)) {
+							if (lit.value === true) {
+								staticAttrs.push(cleanAttrName);
+							} else if (lit.value !== false && lit.value !== null) {
+								staticAttrs.push(`${cleanAttrName}="${escapeAttr(String(lit.value))}"`);
+							}
+							continue;
+						}
+					}
+
+					let isEval = needsEvalFn(value);
 					for (const prop of properties) addString(prop);
 
 					// In a :for loop, dotted iterator access must be ATTR_EVAL
@@ -389,10 +439,22 @@ export function processAST(ast, loopVars) {
 			// Regular element - always process children if they exist
 			htmlParts.push(`<${tag}${attrStr}>`);
 
+			const children = node.children || [];
+
+			// Sole-binding-child fast path: a lone {{ }} interpolation binds
+			// directly to this element's textContent — no <span> wrapper, one
+			// fewer DOM node. The binding's path is the parent element itself.
+			// Excluded for components (a child there is slot content projected
+			// into the component, not the host's textContent).
+			if (!isComponent && children.length === 1 && children[0].type === 'binding') {
+				processBindingNode(children[0], path, true);
+				htmlParts.push(`</${tag}>`);
+				return;
+			}
+
 			// Process children regardless of selfClosing flag
 			// Use output-aware indexing: :else-if/:else produce no DOM output,
 			// so they don't increment the child index.
-			const children = node.children || [];
 			let outputIndex = 0;
 			for (let i = 0; i < children.length; i++) {
 				const child = children[i];
@@ -425,6 +487,25 @@ export function processAST(ast, loopVars) {
 }
 
 // ============ Helper Functions ============
+
+/**
+ * Parse a pure literal expression to its constant value, for folding bindings
+ * that carry no reactive dependency into static markup. Recognises simple
+ * string ('...'/"...", no escapes), number, boolean, and null literals.
+ * Anything else — including dynamic no-dep calls like Date.now() — returns
+ * { ok: false } and keeps its runtime binding.
+ *
+ * @returns {{ ok: true, value: string|number|boolean|null } | { ok: false }}
+ */
+function parseLiteralExpr(expr) {
+	const t = expr.trim();
+	if (/^'[^'\\]*'$/.test(t) || /^"[^"\\]*"$/.test(t)) return { ok: true, value: t.slice(1, -1) };
+	if (/^-?\d+(\.\d+)?$/.test(t)) return { ok: true, value: t };
+	if (t === 'true') return { ok: true, value: true };
+	if (t === 'false') return { ok: true, value: false };
+	if (t === 'null') return { ok: true, value: null };
+	return { ok: false };
+}
 
 function isSimplePath(expr) {
 	return SIMPLE_PATH_REGEX.test(expr.trim());

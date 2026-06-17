@@ -28,6 +28,7 @@ class RouterComponent extends HTMLElement {
         this.currentComponent = null;
         this.router = null;
         this._unsubscribe = null;
+        this._routerReadyHandler = null;
     }
 
     connectedCallback() {
@@ -48,18 +49,21 @@ class RouterComponent extends HTMLElement {
     }
 
     /**
-     * Initialize when router is ready
-     * Router may not exist yet if element is in HTML before Deezul.init()
+     * Initialize when router is ready.
+     * Router may not exist yet if element is in HTML before Deezul.init() —
+     * in that case wait for the 'dz:router-ready' event createRouter fires.
      */
-    _initializeWhenReady(attempts = 0) {
+    _initializeWhenReady() {
         this.router = getRouter();
 
         if (!this.router) {
-            if (attempts >= 200) {
-                logger.error('Router not available after 2s — is Deezul.init() called with routes?');
-                return;
+            if (!this._routerReadyHandler) {
+                this._routerReadyHandler = () => {
+                    this._routerReadyHandler = null;
+                    this._initializeWhenReady();
+                };
+                document.addEventListener('dz:router-ready', this._routerReadyHandler, { once: true });
             }
-            setTimeout(() => this._initializeWhenReady(attempts + 1), 10);
             return;
         }
 
@@ -82,6 +86,10 @@ class RouterComponent extends HTMLElement {
     disconnectedCallback() {
         logger.debug('RouterComponent disconnected', { depth: this.depth });
 
+        if (this._routerReadyHandler) {
+            document.removeEventListener('dz:router-ready', this._routerReadyHandler);
+            this._routerReadyHandler = null;
+        }
         if (this.router) {
             this.router.unregisterRouterComponent(this.depth);
         }
@@ -180,10 +188,10 @@ class RouterComponent extends HTMLElement {
         const dzComponent = document.createElement('dz-component');
         dzComponent.setAttribute('dz-type', componentRef);
 
-        // Pass route params
-        if (params && Object.keys(params).length > 0) {
-            dzComponent._routeParams = params;
-        }
+        // Pass route params + query (always set, so $route exists on every
+        // router-created component even without params)
+        dzComponent._routeParams = params || {};
+        dzComponent._routeQuery = this.router.currentQuery || {};
 
         // Pass cascaded styles
         if (routeForThisDepth.cascadedStyles) {

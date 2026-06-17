@@ -15,7 +15,7 @@ A lightweight reactive UI framework with Shadow DOM web components, proxy-based 
 - **Computed properties & watchers** — Cached computations with dependency tracking
 - **Error boundaries** — Component-level error isolation with recovery
 - **Slots & refs** — Named slots, default slots, and template refs
-- **Two-way binding** — `:bind` for inputs, `:propName.sync` for parent-child sync
+- **Two-way binding** — `:bind` for inputs, `:propName.share` for live parent-child props
 - **Zero runtime dependencies** — Pure JavaScript, ~60KB minified
 
 ## Quick Start
@@ -149,8 +149,15 @@ Deezul.init({
 
 ```html
 <!-- Parent passes props to child -->
-<dz-component dz-type="child" :label="title" :count.sync="total"></dz-component>
+<dz-component dz-type="child" :label="title" :count.share="total"></dz-component>
 ```
+
+Bare props are **isolated one-way**: primitives copy down, objects arrive as
+deep clones (re-cloned on every parent change) — a child can never mutate
+parent state through a plain prop; it emits events to request changes.
+
+`.share` props are **live**: objects pass by reference, primitives stay in
+sync both ways. (`.sync` is accepted as a legacy alias.)
 
 ### Slots
 
@@ -289,7 +296,7 @@ Examples:
 2. **Methods access data via `this`**: `this.count++`
 3. **Computed properties are cached**: Only re-evaluate when dependencies change
 4. **Styles are scoped**: Each component's styles are isolated via Shadow DOM
-5. **Props flow down, events flow up**: Unidirectional data flow with optional `.sync`
+5. **Props flow down, events flow up**: Unidirectional data flow; opt into live sharing with `.share`
 
 ## Project Structure
 

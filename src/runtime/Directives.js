@@ -7,9 +7,15 @@
  * attribute/event name is a registered directive.
  *
  * Directive lifecycle: created → mounted (deferred) → updated → unmounted
+ *
+ * Leave animations: an `unmounted` hook may return a Promise. When a node is
+ * being removed by a :for/:if update, the renderer keeps it in the DOM until
+ * the promise settles — e.g. `unmounted: (el) => el.animate(...).finished`.
+ * (Whole-component unmount cannot defer: the host element is disconnecting.)
  */
 
 import { createLogger } from './Logger.js';
+import { directives as directiveConfig } from './Configuration.js';
 
 const logger = createLogger('Directives');
 
@@ -19,10 +25,9 @@ const logger = createLogger('Directives');
 
 const directiveRegistry = new Map();
 
-// Reserved names that cannot be used as directives
-const RESERVED_NAMES = new Set([
-	'for', 'if', 'else-if', 'else', 'bind', 'ref', 'slot'
-]);
+// Reserved names that cannot be used as directives — single source of truth
+// lives in Configuration.directives.reserved.
+const RESERVED_NAMES = new Set(directiveConfig.reserved);
 
 /**
  * Register a custom directive
@@ -247,21 +252,25 @@ export function createDirectiveBinding(el, value, { oldValue, modifiers } = {}) 
 // ============================================================================
 
 /**
- * Safely call a directive lifecycle hook
+ * Safely call a directive lifecycle hook.
+ * Returns the hook's return value — the renderer uses a Promise returned
+ * from 'unmounted' to defer DOM removal for leave animations.
  * @param {string} hookName - 'created', 'mounted', 'updated', 'unmounted'
  * @param {Object} directive - Directive definition
  * @param {Element} el - Target DOM element
  * @param {Object} binding - Directive binding object
+ * @returns {*} The hook's return value (undefined if absent or it threw)
  */
 export function callDirectiveHook(hookName, directive, el, binding) {
 	const hook = directive[hookName];
-	if (!hook) return;
+	if (!hook) return undefined;
 
 	try {
-		hook(el, binding);
+		return hook(el, binding);
 	} catch (e) {
 		logger.error(`Directive hook '${hookName}' threw`, e, {
 			element: el.tagName
 		});
+		return undefined;
 	}
 }

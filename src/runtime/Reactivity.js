@@ -28,7 +28,7 @@ import {
     setFlushHandlers, setOnProxyCreated, flushSync
 } from './DataProxy.js';
 import { isObject } from './helpers.js';
-import { trackAccess, registerManager, getManager, ComputedManager } from './Computed.js';
+import { trackAccess, registerManager, getManager, getInterestedManagers, ComputedManager } from './Computed.js';
 import { createLogger } from './Logger.js';
 
 const logger = createLogger('Reactivity');
@@ -74,24 +74,58 @@ export function setRenderUpdates(updates) {
 // ============================================================================
 
 /**
- * dataBindMap: WeakMap<rawTarget, Set<binding> | Map<key, ...>>
+ * dataBindMap: WeakMap<rawTarget, Map<key, Set<binding>>>
  *
- *   - Set<binding>             : when the target is itself an object value
- *                                with bindings on it (O(1) lookup).
- *   - Map<key, Set<binding>>   : when the target is a parent of primitives.
- *   - Map<"__dynamic__key">    : :for/:if structures keyed by trigger property.
+ *   Always a Map. Bindings on the target *itself* (object-value bindings,
+ *   e.g. a Date bound to a text node) live under the SELF_BINDINGS symbol
+ *   key, so a target can simultaneously be a bound value and the parent of
+ *   bound primitive properties without the two shapes colliding.
+ *
+ * dynamicsMap: WeakMap<rawTarget, Map<property, Set<structure>>>
+ *   :for/:if structures keyed by trigger property. Separate from
+ *   dataBindMap so lookups don't allocate prefixed key strings.
  *
  * forLoopMap: WeakMap<collection, Set<structure>>
- *   :for-loop registrations, kept separate from dataBindMap so they don't
- *   collide with object-value bindings stored directly on the same target.
+ *   :for-loop registrations keyed by the collection they iterate.
  */
+const SELF_BINDINGS = Symbol('selfBindings');
 const dataBindMap = new WeakMap();
+const dynamicsMap = new WeakMap();
 const forLoopMap = new WeakMap();
 
 const onUpdateCallbacks = new WeakMap();
 
 export function registerUpdateCallback(dataTarget, callback) {
     onUpdateCallbacks.set(dataTarget, callback);
+}
+
+/**
+ * changeListeners: WeakMap<rawTarget, Set<fn(key, value, oldValue)>>
+ *
+ * Lightweight per-target change subscription, fired from the flush phases.
+ * Used by ModuleRegistry to drive store watch() callbacks and localStorage
+ * persistence without wrapping the proxy.
+ */
+const changeListeners = new WeakMap();
+
+export function addChangeListener(objectRef, fn) {
+    const target = getRawTarget(objectRef);
+    let listeners = changeListeners.get(target);
+    if (!listeners) {
+        listeners = new Set();
+        changeListeners.set(target, listeners);
+    }
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+}
+
+function fireChangeListeners(target, key, value, oldValue) {
+    const listeners = changeListeners.get(target);
+    if (!listeners) return;
+    for (const fn of listeners) {
+        try { fn(key, value, oldValue); }
+        catch (e) { logger.error('Error in change listener', e); }
+    }
 }
 
 /**
@@ -113,17 +147,19 @@ const savedRebindings = new WeakMap();
 function saveBindingsForRebind(parentTarget, key, oldObj) {
     const oldTarget = getRawTarget(oldObj);
     const bindings = dataBindMap.get(oldTarget);
+    const dynamics = dynamicsMap.get(oldTarget);
     const forLoops = forLoopMap.get(oldTarget);
-    if (!bindings && !forLoops) return;
+    if (!bindings && !dynamics && !forLoops) return;
 
     let saved = savedRebindings.get(parentTarget);
     if (!saved) {
         saved = new Map();
         savedRebindings.set(parentTarget, saved);
     }
-    saved.set(key, { bindings: bindings || null, forLoops: forLoops || null });
+    saved.set(key, { bindings: bindings || null, dynamics: dynamics || null, forLoops: forLoops || null });
 
     if (bindings) dataBindMap.delete(oldTarget);
+    if (dynamics) dynamicsMap.delete(oldTarget);
     if (forLoops) forLoopMap.delete(oldTarget);
 }
 
@@ -134,6 +170,7 @@ function transferOrRestoreBindings(parentTarget, key, oldObj, newObj) {
     if (saved && saved.has(key)) {
         const entry = saved.get(key);
         if (entry.bindings) dataBindMap.set(newTarget, entry.bindings);
+        if (entry.dynamics) dynamicsMap.set(newTarget, entry.dynamics);
         if (entry.forLoops) forLoopMap.set(newTarget, entry.forLoops);
         saved.delete(key);
         if (saved.size === 0) savedRebindings.delete(parentTarget);
@@ -143,10 +180,15 @@ function transferOrRestoreBindings(parentTarget, key, oldObj, newObj) {
     if (isObject(oldObj)) {
         const oldTarget = getRawTarget(oldObj);
         const bindings = dataBindMap.get(oldTarget);
+        const dynamics = dynamicsMap.get(oldTarget);
         const forLoops = forLoopMap.get(oldTarget);
         if (bindings) {
             dataBindMap.set(newTarget, bindings);
             dataBindMap.delete(oldTarget);
+        }
+        if (dynamics) {
+            dynamicsMap.set(newTarget, dynamics);
+            dynamicsMap.delete(oldTarget);
         }
         if (forLoops) {
             forLoopMap.set(newTarget, forLoops);
@@ -176,21 +218,20 @@ export function addBinding(objectRef, property, nodeRef, metadata) {
     bindingEntry.node = nodeRef;
     bindingEntry.property = property;
 
-    let bindingSet;
+    let propertyMap, bindingKey;
     if (isObject(value)) {
-        const objectTarget = getRawTarget(value);
-        bindingSet = dataBindMap.get(objectTarget);
-        if (!bindingSet) {
-            bindingSet = new Set();
-            dataBindMap.set(objectTarget, bindingSet);
-        }
+        // Object-valued binding: stored on the value's own target under the
+        // SELF_BINDINGS key so it coexists with bindings on its properties.
+        propertyMap = getOrCreatePropertyMap(getRawTarget(value));
+        bindingKey = SELF_BINDINGS;
     } else {
-        const propertyMap = getOrCreatePropertyMap(target);
-        bindingSet = propertyMap.get(property);
-        if (!bindingSet) {
-            bindingSet = new Set();
-            propertyMap.set(property, bindingSet);
-        }
+        propertyMap = getOrCreatePropertyMap(target);
+        bindingKey = property;
+    }
+    let bindingSet = propertyMap.get(bindingKey);
+    if (!bindingSet) {
+        bindingSet = new Set();
+        propertyMap.set(bindingKey, bindingSet);
     }
     bindingSet.add(bindingEntry);
     // Stash the owning Set on the entry so removeBinding can drop it in O(1)
@@ -218,14 +259,12 @@ function getBindings(objectRef, property) {
     const value = target[property];
 
     if (isObject(value)) {
-        const objectTarget = getRawTarget(value);
-        const bindingSet = dataBindMap.get(objectTarget);
-        if (bindingSet instanceof Set) return bindingSet;
-        return null;
+        const propertyMap = dataBindMap.get(getRawTarget(value));
+        return propertyMap ? (propertyMap.get(SELF_BINDINGS) || null) : null;
     }
 
     const propertyMap = dataBindMap.get(target);
-    if (!propertyMap || !(propertyMap instanceof Map)) return null;
+    if (!propertyMap) return null;
     return propertyMap.get(property) || null;
 }
 
@@ -243,13 +282,16 @@ export function addArrayForLoop(collectionRef, dynamicStructure) {
 
 export function addDynamicStructure(objectRef, property, dynamicStructure) {
     const target = getRawTarget(objectRef);
-    const propertyMap = getOrCreatePropertyMap(target);
+    let propertyMap = dynamicsMap.get(target);
+    if (!propertyMap) {
+        propertyMap = new Map();
+        dynamicsMap.set(target, propertyMap);
+    }
 
-    const dynamicKey = `__dynamic__${property}`;
-    let structures = propertyMap.get(dynamicKey);
+    let structures = propertyMap.get(property);
     if (!structures) {
         structures = new Set();
-        propertyMap.set(dynamicKey, structures);
+        propertyMap.set(property, structures);
     }
     structures.add(dynamicStructure);
     trackMembership(dynamicStructure, structures);
@@ -288,9 +330,9 @@ export function unregisterStructure(structure) {
 
 function getDynamicStructures(objectRef, property) {
     const target = getRawTarget(objectRef);
-    const propertyMap = dataBindMap.get(target);
+    const propertyMap = dynamicsMap.get(target);
     if (!propertyMap) return null;
-    const structures = propertyMap.get(`__dynamic__${property}`);
+    const structures = propertyMap.get(property);
     return structures && structures.size > 0 ? structures : null;
 }
 
@@ -318,6 +360,23 @@ function applyDynamics(target, key, value) {
     }
 }
 
+/**
+ * Fire the bindings registered on a target ITSELF (SELF_BINDINGS): eval
+ * bindings whose dependency resolved to an object value (`{{ user.name }}`
+ * with dep `user`), Date bindings, etc. Any change to the target's contents
+ * means those bindings must re-render.
+ */
+function applySelfBindings(target) {
+    const propertyMap = dataBindMap.get(target);
+    const bindings = propertyMap && propertyMap.get(SELF_BINDINGS);
+    if (!bindings) return;
+    for (const binding of bindings) {
+        if (!binding.applyFn) continue;
+        try { binding.applyFn(target, binding); }
+        catch (e) { logger.error('Error updating DOM binding', e); }
+    }
+}
+
 // ============================================================================
 // FLUSH HANDLERS — registered with DataProxy
 // ============================================================================
@@ -335,13 +394,105 @@ function applyDynamics(target, key, value) {
  * with one pass, there's nothing to gain from a separate pre-prune.
  */
 function applyChanges(target, propertyMap) {
+    // Invalidate computed properties in EVERY manager that depends on this
+    // target — shared objects (stores, passed-down models) can be
+    // dependencies of computed properties across several components.
+    // Snapshot: re-evaluation rewrites dep indexes, which removes/re-adds
+    // managers in the live Set — iterating it directly would revisit them
+    // forever (Set iterators see re-added members).
+    let interested = getInterestedManagers(target);
+    if (interested) interested = [...interested];
+    // Watchers belong to the manager that owns this target as its data root.
     const manager = getManager(target);
+    let touched = false;
     for (const [key, entry] of propertyMap) {
         if (entry.value === entry.oldValue && !entry.force) continue;
-        if (manager) manager.invalidate(target, key, applyBindings, applyDynamics);
+        touched = true;
+        if (interested) {
+            for (const m of interested) m.invalidate(target, key, applyBindings, applyDynamics);
+        }
         applyBindings(target, key, entry.value);
         applyDynamics(target, key, entry.value);
-        if (manager) manager.invokeWatcher(key, entry.value);
+        if (manager) manager.invokeWatcher(target, key, entry.value);
+        fireChangeListeners(target, key, entry.value, entry.oldValue);
+    }
+    // The target's contents changed → bindings on the object itself
+    // (evals that depend on the key holding it) must re-render.
+    if (touched) applySelfBindings(target);
+}
+
+// ============================================================================
+// PARENT NOTIFICATIONS — deduplicated per flush
+// ============================================================================
+
+/**
+ * Collection mutations notify the parent property's bindings/dynamics/computed
+ * (e.g. `:if="items.length > 0"` must re-evaluate after a push). Doing that
+ * walk per mutation entry made N single pushes in one turn cost N full
+ * notifications — and each notification can trigger a full :for reconcile
+ * scan. Mutations only need the parent to see the *final* state, so we queue
+ * one notification per (parentTarget, parentKey) and drain after the
+ * mutation/change phases.
+ *
+ * pendingParentNotifs: Map<parentTarget, Map<parentKey, collectionTarget>>
+ */
+let pendingParentNotifs = new Map();
+
+function queueParentNotification(parentTarget, parentKey, target) {
+    let keys = pendingParentNotifs.get(parentTarget);
+    if (!keys) {
+        keys = new Map();
+        pendingParentNotifs.set(parentTarget, keys);
+    }
+    keys.set(parentKey, target);
+}
+
+/**
+ * Queue notifications for every ancestor of a changed target, walking the
+ * proxy parent chain up to the root. This is what makes a deep change
+ * (`state.user.profile.name = x` or `store.items.push(x)`) re-render
+ * bindings and dynamics that depend on an ancestor key (`{{ user.profile.name }}`
+ * compiles with dep `user`), at every level. Deduplicated per flush.
+ */
+function queueAncestorNotifications(proxyInstance, childTarget) {
+    let proxy = proxyInstance;
+    let child = childTarget;
+    while (proxy) {
+        const parent = proxy[PARENT_PROXY];
+        const key = proxy[PARENT_KEY];
+        if (!parent || !key) return;
+        const parentTarget = getRawTarget(parent);
+        queueParentNotification(parentTarget, key, child);
+        child = parentTarget;
+        proxy = parent;
+    }
+}
+
+function drainParentNotifications() {
+    if (pendingParentNotifs.size === 0) return;
+    const local = pendingParentNotifs;
+    pendingParentNotifs = new Map();
+
+    for (const [parentTarget, keys] of local) {
+        // Recompute computed properties derived from mutated collections (e.g.
+        // `count() { return this.posts.length }`). A same-reference mutation
+        // never goes through recordChange, so applyChanges' invalidate pass
+        // is skipped — invalidate here against the holding key, which every
+        // such computed captures as a dependency when it reads the collection.
+        // Snapshot — same re-entrant mutation hazard as in applyChanges.
+        let interested = getInterestedManagers(parentTarget);
+        if (interested) interested = [...interested];
+        for (const [parentKey, target] of keys) {
+            if (interested) {
+                for (const m of interested) m.invalidate(parentTarget, parentKey, applyBindings, applyDynamics);
+            }
+            applyBindings(parentTarget, parentKey, target);
+            applyDynamics(parentTarget, parentKey, target);
+            fireChangeListeners(parentTarget, parentKey, target, target);
+        }
+        // Bindings on the parent object itself (e.g. evals on a store root)
+        // re-render once per flush when anything beneath it changed.
+        applySelfBindings(parentTarget);
     }
 }
 
@@ -352,10 +503,11 @@ function applyChanges(target, propertyMap) {
 function applyMutation(target, type, meta, proxyInstance) {
     if (!renderUpdates) return;
 
-    // Date mutations: bindings stored directly on the date target.
+    // Date mutations: bindings stored on the date target's own SELF entry.
     if (type === 'date') {
-        const bindings = dataBindMap.get(target);
-        if (bindings instanceof Set) {
+        const propertyMap = dataBindMap.get(target);
+        const bindings = propertyMap && propertyMap.get(SELF_BINDINGS);
+        if (bindings) {
             for (const binding of bindings) {
                 if (!binding.applyFn) continue;
                 try { binding.applyFn(target, binding); }
@@ -380,31 +532,20 @@ function applyMutation(target, type, meta, proxyInstance) {
         dispatcher(structure, meta, target);
     });
 
-    // Walk up the proxy chain so the parent's bindings / dynamics fire.
+    // Walk up the proxy chain so ancestors' bindings / dynamics fire.
     // Same-reference mutation can't be detected via recordChange (oldValue ===
-    // value), so this lives in the mutation path directly.
+    // value), so this lives in the mutation path directly. Notifications are
+    // queued and deduplicated per (parentTarget, parentKey) — see
+    // drainParentNotifications.
     if (proxyInstance) {
-        const parent = proxyInstance[PARENT_PROXY];
-        const parentKey = proxyInstance[PARENT_KEY];
-        if (parent && parentKey) {
-            const parentTarget = getRawTarget(parent);
-            // Recompute computed properties derived from this collection (e.g.
-            // `count() { return this.posts.length }`). A same-reference mutation
-            // never goes through recordChange, so applyChanges' invalidate pass
-            // is skipped — invalidate here against the holding key, which every
-            // such computed captures as a dependency when it reads the array.
-            const manager = getManager(parentTarget);
-            if (manager) manager.invalidate(parentTarget, parentKey, applyBindings, applyDynamics);
-            applyBindings(parentTarget, parentKey, target);
-            applyDynamics(parentTarget, parentKey, target);
-        }
+        queueAncestorNotifications(proxyInstance, target);
     }
 }
 
 const mutationDispatchers = {
     push:      (s, m)    => renderUpdates.forLoopPush?.(s, m.items),
-    pop:       (s, m)    => renderUpdates.forLoopPop?.(s, m.removed),
-    shift:     (s, m)    => renderUpdates.forLoopShift?.(s, m.removed),
+    pop:       (s)       => renderUpdates.forLoopPop?.(s),
+    shift:     (s)       => renderUpdates.forLoopShift?.(s),
     unshift:   (s, m)    => renderUpdates.forLoopUnshift?.(s, m.items),
     splice:    (s, m)    => renderUpdates.forLoopSplice?.(s, m.start, m.deleteCount, m.items, m.removed),
     sort:      (s, m, t) => renderUpdates.forLoopReorder?.(s, t),
@@ -418,10 +559,13 @@ const mutationDispatchers = {
 };
 
 /**
- * After bindings & watchers settle, fire $updated lifecycle callbacks once
- * per touched target — across both property changes and collection mutations.
+ * After bindings & watchers settle, drain the deduplicated parent
+ * notifications, then fire $updated lifecycle callbacks once per touched
+ * target — across both property changes and collection mutations.
  */
 function afterFlush(localChain, localMutations) {
+    drainParentNotifications();
+
     const notified = new Set();
     const visit = (target) => {
         if (notified.has(target)) return;
@@ -438,20 +582,22 @@ function afterFlush(localChain, localMutations) {
 setFlushHandlers({ applyChanges, applyMutation, afterFlush });
 
 /**
- * Propagate the ComputedManager from a parent target down to each nested
- * target the first time its proxy is created.
+ * Propagate $updated-style callbacks (component $updated hooks, store
+ * persistence) from a parent target down to each nested target the first
+ * time its proxy is created: a change to a nested target should notify the
+ * owner registered on the root. Registration happens before nested proxies
+ * exist (mount step 2 / store creation), so every lazily-created child
+ * inherits the root's callback.
  *
- * Without this, a change deep in the data tree (e.g., `state.user.name = 'Bob'`)
- * would call `getManager(userTarget)` → null because the manager is only
- * registered on the root `state`. Copying the parent's manager pointer onto
- * each child the moment its proxy is created lets any descendant find its
- * manager via a flat WeakMap lookup.
+ * Computed invalidation does NOT need propagation — the interest index in
+ * Computed.js maps any dependency target straight to the managers that
+ * depend on it, including targets shared across components.
  */
 setOnProxyCreated((target, parentTarget) => {
     if (!parentTarget) return;
-    const parentManager = getManager(parentTarget);
-    if (parentManager && !getManager(target)) {
-        registerManager(target, parentManager);
+    const parentCb = onUpdateCallbacks.get(parentTarget);
+    if (parentCb && !onUpdateCallbacks.has(target)) {
+        onUpdateCallbacks.set(target, parentCb);
     }
 });
 
@@ -470,28 +616,65 @@ export function batch(callback) {
 }
 
 // ============================================================================
+// SHARED PROXY FACTORY
+// ============================================================================
+
+/**
+ * One factory (and one proxy cache) for the whole application. The handlers
+ * are stateless module singletons, so per-component factories only ever
+ * duplicated the cache — sharing it means an object reachable from two
+ * components (a store, a passed-down model) resolves to the same proxy
+ * everywhere. Created lazily because the handler constants are defined
+ * below this point in the module.
+ */
+let sharedFactory = null;
+
+function getSharedFactory() {
+    if (!sharedFactory) {
+        sharedFactory = createProxyFactory(new Map([
+            [Array, arrayHandlers],
+            [Map, mapHandlers],
+            [Set, setHandlers],
+            [Date, dateHandlers],
+            [Object, objectHandlers]
+        ]));
+    }
+    return sharedFactory;
+}
+
+/**
+ * Wrap a plain data object in a fully reactive proxy (collection handlers,
+ * change recording, microtask flush) without the component layer (methods /
+ * computed / watchers). Used by ModuleRegistry for shared data stores.
+ */
+export function createReactiveData(data) {
+    return getSharedFactory().createProxy(data);
+}
+
+// ============================================================================
 // CREATE REACTIVITY
 // ============================================================================
 
 export default function createReactivity(componentDef) {
-    const handlerMap = new Map([
-        [Array, arrayHandlers],
-        [Map, mapHandlers],
-        [Set, setHandlers],
-        [Date, dateHandlers],
-        [Object, objectHandlers]
-    ]);
-
-    const factory = createProxyFactory(handlerMap);
+    const factory = getSharedFactory();
     const data = componentDef.data || {};
     const dataProxy = factory.createProxy(data);
 
     let manager = null;
 
+    // Bound methods are cached: binding on every access would allocate a
+    // fresh function per event dispatch and break proxy.method identity.
+    const boundMethods = componentDef.methods ? new Map() : null;
+
     const componentProxy = new Proxy(componentDef, {
         get(target, key) {
-            if (target.methods && key in target.methods) {
-                return target.methods[key].bind(componentProxy);
+            if (boundMethods && key in target.methods) {
+                let bound = boundMethods.get(key);
+                if (!bound) {
+                    bound = target.methods[key].bind(componentProxy);
+                    boundMethods.set(key, bound);
+                }
+                return bound;
             }
             if (manager && manager.has(key)) {
                 trackAccess(data, key);
@@ -500,6 +683,10 @@ export default function createReactivity(componentDef) {
             return dataProxy[key];
         },
         set(target, key, value) {
+            if (manager && manager.hasSetter(key)) {
+                manager.invokeSetter(key, value);
+                return true;
+            }
             dataProxy[key] = value;
             return true;
         },
@@ -552,11 +739,15 @@ const objectHandlers = {
         if (renderUpdates && Array.isArray(oldValue) && Array.isArray(value)
             && forLoopMap.get(oldValue)?.size > 0) {
             reconcileArray(target, key, oldValue, value);
+            if (proxyInstance) queueAncestorNotifications(proxyInstance, target);
             return true;
         }
 
         target[key] = value;
         recordChange(target, key, oldValue, value);
+        // Bubble so bindings/dynamics that depend on an ancestor key see deep
+        // changes (no-op for root-level sets — the root proxy has no parent).
+        if (proxyInstance) queueAncestorNotifications(proxyInstance, target);
         return true;
     },
 
@@ -567,6 +758,7 @@ const objectHandlers = {
         }
         const result = delete target[key];
         recordChange(target, key, oldValue, undefined);
+        if (proxyInstance) queueAncestorNotifications(proxyInstance, target);
         return result;
     }
 };

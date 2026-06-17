@@ -44,6 +44,7 @@
   },
   "devDependencies": {
     "@rollup/plugin-terser": "^1.0.0",
+    "happy-dom": "^20.10.2",
     "http-server": "^14.1.1",
     "rollup": "^4.0.0"
   },

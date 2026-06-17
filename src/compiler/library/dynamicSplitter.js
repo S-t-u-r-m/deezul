@@ -75,6 +75,7 @@ export function splitDynamics(ast, dynamics) {
 					type: 'for',
 					iteratorVar: dynamic.iteratorVar,
 					indexVar: dynamic.indexVar,
+					keyExpr: dynamic.keyExpr || null,
 					source: dynamic.source,
 					sourceProperties: extractSourceProperties(dynamic.source),
 					templateNode: extractDynamicTemplate(dynamic.node),
@@ -313,6 +314,7 @@ function extractDynamicTemplate(node) {
 	// Remove dynamic directives from attributes
 	if (clone.attributes) {
 		delete clone.attributes[':for'];
+		delete clone.attributes[':key'];
 		delete clone.attributes[':if'];
 		delete clone.attributes[':else-if'];
 		delete clone.attributes[':else'];
