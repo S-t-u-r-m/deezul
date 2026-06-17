@@ -23,7 +23,7 @@
 import { readdir, mkdir, writeFile, copyFile, readFile, rm, cp } from 'fs/promises';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { dirname, resolve, join, basename, extname } from 'path';
+import { dirname, resolve, join, basename, extname, relative } from 'path';
 import { compileFileToCode } from '../compiler/library/main.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,13 +42,26 @@ if (!existsSync(srcDir)) {
 await rm(distDir, { recursive: true, force: true });
 await mkdir(compiledDir, { recursive: true });
 
-// 1. Compile components -> dist/compiled/
-const files = (await readdir(srcDir)).filter(f => f.endsWith('.js'));
+// 1. Compile components -> dist/compiled/ (recursively; subfolders under src/
+//    are preserved so view/, layout/, component/ etc. map 1:1 into compiled/).
+async function collectJs(dir) {
+    const found = [];
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) found.push(...await collectJs(full));
+        else if (entry.name.endsWith('.js')) found.push(full);
+    }
+    return found;
+}
+const files = await collectJs(srcDir);
 for (const file of files) {
-    const code = await compileFileToCode(join(srcDir, file));
-    const out = basename(file, extname(file)) + '.compiled.js';
-    await writeFile(join(compiledDir, out), code, 'utf-8');
-    console.log(`Compiled ${file} -> compiled/${out}`);
+    const code = await compileFileToCode(file);
+    const rel = relative(srcDir, file);                       // e.g. component/SectionBlock.js
+    const out = join(dirname(rel), basename(rel, extname(rel)) + '.compiled.js');
+    const dest = join(compiledDir, out);
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, code, 'utf-8');
+    console.log(`Compiled ${rel} -> compiled/${out.split(/[\\/]/).join('/')}`);
 }
 
 // 2. Runtime -> dist/deezul.esm.js
