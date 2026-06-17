@@ -56,7 +56,7 @@ export function compile(template, options = {}) {
 function compileOptimized(ast, componentName, options) {
 	// 1. Single pass: detect bindings, build strings, generate HTML
 	const processed = processAST(ast);
-	const { bindings, dynamics, slots, strings, stringMap, templateHTML } = processed;
+	const { bindings, dynamics, slots, refs, strings, stringMap, templateHTML } = processed;
 
 	// 2. Build bytecode (uses pre-built string map for O(1) lookups)
 	const { bytecode, evalFunctions, bindingCount } = buildBytecodeOptimized(bindings, strings, stringMap);
@@ -73,6 +73,7 @@ function compileOptimized(ast, componentName, options) {
 		evalFunctions,
 		dynamics: compiledDynamics,
 		slots,
+		refs,
 		bindingCount,
 		stats: {
 			bindingCount,

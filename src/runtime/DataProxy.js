@@ -297,6 +297,10 @@ export function createProxyFactory(handlers) {
 
                 if (isObject(value) && !value[IS_PROXY]) {
                     if (value[SKIP_PROXY]) return value;
+                    // DOM nodes (e.g. elements stored in $refs) must never be wrapped:
+                    // a proxied element calls its native methods with the proxy as the
+                    // receiver, which throws "Illegal invocation".
+                    if (typeof Node !== 'undefined' && value instanceof Node) return value;
                     return createProxy(value, proxyInstance, String(key));
                 }
 

@@ -327,6 +327,23 @@ function extractBalanced(source, startIndex, open, close) {
 		const char = source[i];
 		const prevChar = source[i - 1];
 
+		// Skip comments when not inside a string/template. Without this an
+		// apostrophe in a // comment (it's, object's) opens a phantom string and
+		// desyncs brace/quote tracking, silently breaking the whole parse.
+		if (!inString && !inTemplate) {
+			if (char === '/' && source[i + 1] === '/') {
+				i += 2;
+				while (i < source.length && source[i] !== '\n') i++;
+				continue;
+			}
+			if (char === '/' && source[i + 1] === '*') {
+				i += 2;
+				while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
+				i += 2; // step past the closing */
+				continue;
+			}
+		}
+
 		// Handle string literals
 		if (!inString && !inTemplate && (char === '"' || char === "'")) {
 			inString = true;
