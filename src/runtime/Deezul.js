@@ -17,6 +17,7 @@ import { registerDirective, unregisterDirective, getDirective, getDirectiveNames
 import { registerGlobalErrorHandler, unregisterGlobalErrorHandler } from './ErrorBoundary.js';
 import { configure, getConfig, directives, logging, errors, framework } from './Configuration.js';
 import { REBINDABLE, REBIND, PARENT_PROXY, nextTick, markRaw, toRaw } from './DataProxy.js';
+import { addGlobalStyles } from './StyleSystem.js';
 import { dz404 } from './LibraryComponents.js';
 import './DzComponent.js';
 import './RouterComponent.js';
@@ -41,6 +42,8 @@ let initialized = false;
  * @param {Object} [options.logging] - Logging config overrides (see Configuration.js)
  * @param {Object} [options.errors] - Error handling config overrides
  * @param {Object} [options.directives] - Directive prefix overrides
+ * @param {Array<string|CSSStyleSheet>} [options.styles] - Global stylesheets adopted
+ *   into every component's shadow root (a shared CSS library / design tokens)
  */
 function init(options = {}) {
 	const {
@@ -51,7 +54,8 @@ function init(options = {}) {
 		beforeNavigate,
 		afterNavigate,
 		notFoundComponent,
-		basePath
+		basePath,
+		styles = []
 	} = options;
 
 	initialized = true;
@@ -63,6 +67,13 @@ function init(options = {}) {
 		directives: options.directives,
 		framework: rootElement ? { rootElement } : undefined
 	});
+
+	// Register global stylesheets (CSS strings or CSSStyleSheet objects) before any
+	// component mounts, so they are adopted into every shadow root. See
+	// Deezul.addGlobalStyles for the imperative equivalent.
+	for (const css of (Array.isArray(styles) ? styles : [styles])) {
+		if (css) addGlobalStyles(css);
+	}
 
 	// Register modules — route to correct registry by type
 	for (let i = 0, len = modules.length; i < len; i++) {
@@ -289,6 +300,9 @@ const Deezul = {
 	// Component creation
 	createComponent,
 
+	// Global styles (adopted into every component shadow root)
+	addGlobalStyles,
+
 	// Reactivity utilities
 	nextTick,
 	markRaw,
@@ -321,4 +335,4 @@ if (typeof window !== 'undefined') window.Deezul = Deezul;
 else if (typeof globalThis !== 'undefined') globalThis.Deezul = Deezul;
 
 export default Deezul;
-export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, cloneStore, createComponent, isInitialized, nextTick, markRaw, toRaw, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };
+export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, cloneStore, createComponent, addGlobalStyles, isInitialized, nextTick, markRaw, toRaw, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };

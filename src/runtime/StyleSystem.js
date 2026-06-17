@@ -11,6 +11,45 @@
  *   3. Component's own styles (highest precedence)
  */
 
+// ── Global stylesheets ───────────────────────────────────────────────────────
+// Shared CSSStyleSheets adopted into EVERY component's shadow root. A global
+// stylesheet doesn't cross shadow boundaries on its own, so register it here
+// (via Deezul.addGlobalStyles) and each component adopts the same sheet object —
+// one sheet shared across all shadow roots, no per-component duplication, and
+// it covers runtime-applied classes (unlike compile-time usage extraction).
+const globalSheets = [];
+
+/**
+ * Register a global stylesheet applied to all component shadow roots.
+ * Accepts a CSS string or an existing CSSStyleSheet. Returns the sheet so the
+ * caller can later mutate it (e.g. sheet.replaceSync) and have every adopting
+ * shadow root update live.
+ * @param {string|CSSStyleSheet} css
+ * @returns {CSSStyleSheet}
+ */
+export function addGlobalStyles(css) {
+	let sheet = css;
+	if (!(css instanceof CSSStyleSheet)) {
+		sheet = new CSSStyleSheet();
+		sheet.replaceSync(String(css));
+	}
+	if (!globalSheets.includes(sheet)) globalSheets.push(sheet);
+	return sheet;
+}
+
+/**
+ * Adopt all registered global stylesheets into a shadow root. Adopted sheets
+ * sit below the shadow tree's own <style> elements in the cascade, so a
+ * component's scoped styles still win on conflicts.
+ * @param {ShadowRoot} shadowRoot
+ */
+export function adoptGlobalStyles(shadowRoot) {
+	if (!globalSheets.length || !shadowRoot) return;
+	const existing = shadowRoot.adoptedStyleSheets || [];
+	const missing = globalSheets.filter(s => !existing.includes(s));
+	if (missing.length) shadowRoot.adoptedStyleSheets = [...existing, ...missing];
+}
+
 /**
  * Create and append a <style> element to a shadow root.
  * @param {ShadowRoot} shadowRoot
@@ -92,4 +131,4 @@ export function injectSlotStyles(childShadowRoot, slotName, decodedSlotStyles) {
 	return true;
 }
 
-export default { renderStylesIntoShadow, decodeSlotStyles, injectSlotStyles };
+export default { renderStylesIntoShadow, decodeSlotStyles, injectSlotStyles, addGlobalStyles, adoptGlobalStyles };

@@ -16,7 +16,7 @@ import {
 } from './render.js';
 import { callDirectiveHook, runElementCleanup } from './Directives.js';
 import { handleComponentError, clearErrorState, hasError } from './ErrorBoundary.js';
-import { renderStylesIntoShadow } from './StyleSystem.js';
+import { renderStylesIntoShadow, adoptGlobalStyles } from './StyleSystem.js';
 import { renderLoading } from './LibraryComponents.js';
 import { getNodeByPath, resolveDottedPath } from './constants.js';
 import { createLogger } from './Logger.js';
@@ -352,6 +352,10 @@ class DzComponent extends HTMLElement {
 			this._cascadedStyles || null,
 			def.style || null
 		);
+
+		// Adopt any globally-registered stylesheets (Deezul.addGlobalStyles) so a
+		// shared CSS library reaches inside every component's shadow root.
+		adoptGlobalStyles(this.shadowRoot);
 
 		this.component.root = this.shadowRoot;
 

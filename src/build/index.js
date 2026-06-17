@@ -87,6 +87,10 @@ for (const e of entries) {
     } else if (e.isDirectory() && e.name === 'public') {
         await cp(join(ROOT, 'public'), distDir, { recursive: true });
         console.log(`Copied public/ -> dist/`);
+    } else if (e.isDirectory() && e.name === 'assets') {
+        // Copied path-preserving (dist/assets/) so /assets/... URLs match dev.
+        await cp(join(ROOT, 'assets'), join(distDir, 'assets'), { recursive: true });
+        console.log(`Copied assets/ -> dist/assets/`);
     }
 }
 
