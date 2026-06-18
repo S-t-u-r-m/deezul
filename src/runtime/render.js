@@ -78,6 +78,31 @@ function applyBoolAttrEval(_, b) {
     if (v) b.node.setAttribute(b.attributeName, '');
     else b.node.removeAttribute(b.attributeName);
 }
+// :for row eval bindings re-run with the row's CURRENT item/index (read off the
+// instance via b.row, so keyed reconciliation that updates instance.item is seen).
+function applyForRowText(_, b) { b.node.textContent = b.evalFn.call(b.proxy, b.row.item, b.row.index); }
+function applyForRowAttr(_, b) {
+    const v = b.evalFn.call(b.proxy, b.row.item, b.row.index);
+    if (typeof v === 'boolean') {
+        if (v) b.node.setAttribute(b.attributeName, '');
+        else b.node.removeAttribute(b.attributeName);
+    } else {
+        setAttrMerged(b.node, b.attributeName, v);
+    }
+}
+
+// The dependencies of a :for row binding that come from OUTER component state
+// (not the iterator/index vars), or null if there are none.
+function outerDeps(deps, iteratorVar, indexVar) {
+    if (!deps || !deps.length) return null;
+    const out = [];
+    for (let i = 0; i < deps.length; i++) {
+        const d = deps[i];
+        if (d !== iteratorVar && d !== indexVar) out.push(d);
+    }
+    return out.length ? out : null;
+}
+
 function applyDirectiveUpdate(newValue, b) {
     b.directiveBinding.oldValue = b.directiveBinding.value;
     b.directiveBinding.value = newValue;
@@ -822,10 +847,21 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                 bindings.push({ node: bindNode, property: desc.prop, applyFn: desc.applyFn });
                 break;
             }
-            case BindingType.TEXT_EVAL:
+            case BindingType.TEXT_EVAL: {
                 bindNode.textContent = desc.evalFn.call(parentProxy, item, index);
-                bindings.push({ node: bindNode, evalFn: desc.evalFn });
+                // Subscribe to OUTER deps so changes to component state (not just the
+                // row item) re-evaluate this row; reconciliation re-evals via evalFn.
+                const outer = outerDeps(desc.deps, iteratorVar, indexVar);
+                if (outer) {
+                    for (let i = 0; i < outer.length; i++)
+                        bindings.push(addBinding(parentProxy, outer[i], bindNode, {
+                            evalFn: desc.evalFn, proxy: parentProxy, row: instance, applyFn: applyForRowText
+                        }));
+                } else {
+                    bindings.push({ node: bindNode, evalFn: desc.evalFn });
+                }
                 break;
+            }
             case BindingType.ATTR: {
                 if (desc.directiveParsed) {
                     const value = resolveIterationValue(desc.prop, iteratorVar, item, indexVar, index, parentProxy);
@@ -863,7 +899,15 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                     } else {
                         setAttrMerged(bindNode, desc.attr, evalValue);
                     }
-                    bindings.push({ node: bindNode, evalFn: desc.evalFn, attributeName: desc.attr });
+                    const outer = outerDeps(desc.deps, iteratorVar, indexVar);
+                    if (outer) {
+                        for (let i = 0; i < outer.length; i++)
+                            bindings.push(addBinding(parentProxy, outer[i], bindNode, {
+                                evalFn: desc.evalFn, proxy: parentProxy, row: instance, attributeName: desc.attr, applyFn: applyForRowAttr
+                            }));
+                    } else {
+                        bindings.push({ node: bindNode, evalFn: desc.evalFn, attributeName: desc.attr });
+                    }
                 }
                 break;
             }
@@ -1378,7 +1422,7 @@ function updateInstanceBindings(structure, instance, newItem, newIndex) {
                     if (evalValue) binding.node.setAttribute(binding.attributeName, '');
                     else binding.node.removeAttribute(binding.attributeName);
                 } else {
-                    binding.node.setAttribute(binding.attributeName, evalValue);
+                    setAttrMerged(binding.node, binding.attributeName, evalValue);
                 }
             } else {
                 binding.node.textContent = evalValue;
