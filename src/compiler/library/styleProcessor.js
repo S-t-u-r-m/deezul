@@ -127,9 +127,16 @@ export function minify(css) {
 }
 
 /**
- * Validate CSS and return any syntax errors
+ * Validate CSS and return any errors found.
+ *
+ * Two severities:
+ *  - `fatal: true`  — real syntax errors (parse failures). The stylesheet is broken.
+ *  - no flag        — lexer lint findings (unknown property, value/type mismatch).
+ *                     The CSS is syntactically fine and the browser may still
+ *                     understand it, so callers should warn, not discard.
+ *
  * @param {string} css - CSS source
- * @returns {object[]} Array of error objects
+ * @returns {object[]} Array of error objects ({ message, line, column?, property?, fatal? })
  */
 export function validate(css) {
 	const errors = [];
@@ -141,17 +148,31 @@ export function validate(css) {
 				errors.push({
 					message: error.message,
 					line: error.line,
-					column: error.column
+					column: error.column,
+					fatal: true
 				});
 			}
 		});
 
-		// Additional validation via lexer
+		// Additional validation via lexer (lint-level, non-fatal)
 		csstree.walk(ast, {
 			visit: 'Declaration',
 			enter(node) {
+				// Values containing var()/env() can expand to anything at runtime —
+				// css-tree's lexer cannot match them BY DESIGN ("Matching for a tree
+				// with var() is not supported") even though they are valid CSS.
+				// Skip matching entirely for those declarations.
+				let hasSubstitution = false;
+				csstree.walk(node.value, (n) => {
+					if (n.type === 'Function' && /^(var|env)$/i.test(n.name)) hasSubstitution = true;
+				});
+				if (hasSubstitution) return;
+
 				const match = csstree.lexer.matchDeclaration(node);
 				if (match.error) {
+					// Belt-and-braces: if the lexer still trips on a substitution it
+					// found deeper than our walk (e.g. inside Raw), ignore that too.
+					if (/var\(\)/.test(match.error.message)) return;
 					errors.push({
 						message: match.error.message,
 						property: node.property,
@@ -164,7 +185,8 @@ export function validate(css) {
 		errors.push({
 			message: e.message,
 			line: e.line,
-			column: e.column
+			column: e.column,
+			fatal: true
 		});
 	}
 
@@ -273,10 +295,13 @@ export function transformHostSelectors(css, scopeId) {
 export function processStyles(css, options = {}) {
 	const { scopeId, shadow = true, minify: shouldMinify = false } = options;
 
-	// Validate first
+	// Validate first. Only genuine PARSE errors discard the stylesheet — lexer
+	// lint findings (unknown property, value mismatch) are returned as warnings
+	// alongside the processed CSS, never by silently dropping every rule.
 	const errors = validate(css);
-	if (errors.length > 0) {
-		return { css: '', selectors: [], errors };
+	const fatal = errors.filter(e => e.fatal);
+	if (fatal.length > 0) {
+		return { css: '', selectors: [], errors: fatal };
 	}
 
 	let processedCss = css;
@@ -302,7 +327,7 @@ export function processStyles(css, options = {}) {
 	return {
 		css: processedCss,
 		selectors,
-		errors: []
+		errors   // non-fatal lint warnings (possibly empty)
 	};
 }
 
