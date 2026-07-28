@@ -197,6 +197,52 @@ function transferOrRestoreBindings(parentTarget, key, oldObj, newObj) {
     }
 }
 
+/**
+ * Re-home the bindings that DEPEND ON `parentTarget[key]` when that property is
+ * reassigned across the primitive/object boundary or between object identities.
+ *
+ * Such a binding is homed by its dependency's VALUE: under the value's
+ * SELF_BINDINGS when that value is an object, else under (parentTarget, key).
+ * On reassignment the home key changes, so unless the entries move, the flush's
+ * getBindings(parentTarget, key) — which routes by the NEW value — never finds
+ * them and the binding silently stops updating (null↔object, object↔object,
+ * object→null). We move ONLY the entries for this exact (owner, property)
+ * dependency, leaving the object's own-property bindings and any OTHER
+ * property's bindings that happen to share the same object value untouched.
+ *
+ * Runs synchronously in the set/delete trap, before recordChange, so the value
+ * is already the new one when the flush reads it back.
+ */
+function rehomePropertyBindings(parentTarget, key, oldValue, newValue) {
+    const oldIsObj = isObject(oldValue);
+    const newIsObj = isObject(newValue);
+    // Both primitive → home is (parentTarget, key) either way; nothing to move.
+    if (!oldIsObj && !newIsObj) return;
+
+    const srcMap = oldIsObj ? dataBindMap.get(getRawTarget(oldValue)) : dataBindMap.get(parentTarget);
+    const srcSet = srcMap && srcMap.get(oldIsObj ? SELF_BINDINGS : key);
+    if (!srcSet || srcSet.size === 0) return;
+
+    let moving = null;
+    for (const entry of srcSet) {
+        if (entry.owner === parentTarget && entry.property === key) (moving || (moving = [])).push(entry);
+    }
+    if (!moving) return;
+
+    const dstMap = newIsObj ? getOrCreatePropertyMap(getRawTarget(newValue)) : getOrCreatePropertyMap(parentTarget);
+    const dstKey = newIsObj ? SELF_BINDINGS : key;
+    let dstSet = dstMap.get(dstKey);
+    if (dstSet === srcSet) return; // same physical set — no move needed
+    if (!dstSet) { dstSet = new Set(); dstMap.set(dstKey, dstSet); }
+
+    for (let i = 0; i < moving.length; i++) {
+        const entry = moving[i];
+        srcSet.delete(entry);
+        dstSet.add(entry);
+        entry._set = dstSet;
+    }
+}
+
 // ============================================================================
 // BINDING REGISTRATION (called by runtime at render time)
 // ============================================================================
@@ -217,6 +263,11 @@ export function addBinding(objectRef, property, nodeRef, metadata) {
     const bindingEntry = metadata || {};
     bindingEntry.node = nodeRef;
     bindingEntry.property = property;
+    // The (owner, property) pair is the binding's stable DEPENDENCY identity,
+    // independent of where it's physically homed (which follows the value's
+    // type). rehomePropertyBindings uses it to move exactly this dependency's
+    // entries when the property is reassigned.
+    bindingEntry.owner = target;
 
     let propertyMap, bindingKey;
     if (isObject(value)) {
@@ -744,6 +795,11 @@ const objectHandlers = {
         }
 
         target[key] = value;
+        // Follow this property's own dependency-bindings across the value change
+        // (null↔object / object↔object / object→null) so a reassignment doesn't
+        // strand them on the old value's SELF_BINDINGS. No-ops when the REBINDABLE
+        // transfer above already moved the old value's whole map.
+        rehomePropertyBindings(target, key, oldValue, value);
         recordChange(target, key, oldValue, value);
         // Bubble so bindings/dynamics that depend on an ancestor key see deep
         // changes (no-op for root-level sets — the root proxy has no parent).
@@ -757,6 +813,9 @@ const objectHandlers = {
             saveBindingsForRebind(target, key, oldValue);
         }
         const result = delete target[key];
+        // Deleting an object-valued property → move its dependency-bindings back
+        // to the (target, key) home so a later re-set (or the delete itself) fires them.
+        rehomePropertyBindings(target, key, oldValue, undefined);
         recordChange(target, key, oldValue, undefined);
         if (proxyInstance) queueAncestorNotifications(proxyInstance, target);
         return result;
