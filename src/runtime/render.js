@@ -159,9 +159,22 @@ function resolveIterationValue(prop, iteratorVar, item, indexVar, index, parentP
  * for can wrap THIS scope to add its own iterator, giving `this.root` AND
  * `this.mid` access at the leaf level.
  */
+// Marker read off a scope proxy to retrieve its enclosing-iterator item map.
+const ITER_BINDINGS = Symbol('dzIterBindings');
+
 function makeIterScope(parentProxy, iteratorVar, item, indexVar, index) {
+    // Chain of enclosing iterator NAME → ITEM (the real data proxy). A nested
+    // for-row binding that reads an outer iterator's property (e.g. an inner chip's
+    // :class="sec.selected") uses this to subscribe at PROPERTY granularity on the
+    // actual item, so mutating sec.selected re-evaluates the row. Without it the
+    // binding would subscribe to the scope's whole-object 'sec' key, which only fires
+    // on identity reassignment — never on in-place mutation.
+    const parentIters = parentProxy ? parentProxy[ITER_BINDINGS] : null;
+    const iters = parentIters ? Object.assign({}, parentIters) : {};
+    if (item !== null && typeof item === 'object') iters[iteratorVar] = item;
     return new Proxy(parentProxy, {
         get(target, prop, receiver) {
+            if (prop === ITER_BINDINGS) return iters;
             if (prop === iteratorVar) return item;
             if (prop === indexVar) return index;
             return Reflect.get(target, prop, receiver);
@@ -171,6 +184,72 @@ function makeIterScope(parentProxy, iteratorVar, item, indexVar, index) {
             return Reflect.has(target, prop);
         }
     });
+}
+
+/**
+ * Subscribe a :for-row eval binding (text or attribute) so a per-row mutation of an
+ * item PROPERTY it reads re-evaluates exactly that row. Three dependency flavours:
+ *
+ *  1. the row's OWN item — the direct iterator is a bare param (`sec.prop`); subscribe
+ *     on `item` at the property granularity the expression reads (extractParamDeps).
+ *  2. an ENCLOSING iterator (nested :for) — accessed as `this.<name>.prop` and present
+ *     in the scope chain's item map; subscribe on that real item (extractIteratorDeps).
+ *  3. ordinary component state — subscribe on the parent proxy, as before.
+ *
+ * Without (1)/(2) an item-property mutation would only fire a binding keyed on the whole
+ * object (identity), never on in-place mutation. This is the row-binding analogue of the
+ * nested-structure wiring already done for :for/:if via addDynamicStructure.
+ */
+function subscribeForRowEval(bindings, desc, bindNode, instance, parentProxy, iteratorVar, indexVar, item, meta) {
+    const evalFn = desc.evalFn;
+    const mk = () => ({ evalFn, proxy: parentProxy, row: instance, attributeName: meta.attributeName, applyFn: meta.applyFn });
+    let wired = false;
+
+    // (1) The row's own item props (direct iterator, a bare param).
+    if (item !== null && typeof item === 'object') {
+        const own = extractParamDeps(evalFn, iteratorVar);
+        for (let p = 0; p < own.length; p++) { bindings.push(addBinding(item, own[p], bindNode, mk())); wired = true; }
+    }
+
+    // (2)/(3) Outer deps: enclosing-iterator props on the real item, else component state.
+    const outer = outerDeps(desc.deps, iteratorVar, indexVar);
+    if (outer) {
+        const iters = parentProxy ? parentProxy[ITER_BINDINGS] : null;
+        for (let i = 0; i < outer.length; i++) {
+            const dep = outer[i];
+            const encItem = iters ? iters[dep] : null;
+            let depWired = false;
+            if (encItem && typeof encItem === 'object') {
+                const props = extractIteratorDeps(evalFn, dep);
+                for (let p = 0; p < props.length; p++) { bindings.push(addBinding(encItem, props[p], bindNode, mk())); depWired = true; wired = true; }
+            }
+            if (!depWired) { bindings.push(addBinding(parentProxy, dep, bindNode, mk())); wired = true; }
+        }
+    }
+
+    // Nothing reactive to subscribe → a plain entry (reconcile still re-evals it).
+    if (!wired) bindings.push({ node: bindNode, evalFn, attributeName: meta.attributeName });
+}
+
+/**
+ * Like extractIteratorDeps but for a BARE param access (`<var>.<prop>`, not `this.<var>`).
+ * The compiler names a :for-row eval fn's param after the iterator, so the row's own item
+ * is read as `sec.prop`; this pulls those property names so the row can subscribe to them.
+ * Cached on the function (keyed by var). The negative-lookbehind-ish prefix class excludes
+ * `.`/word chars so `this.sec.x` and `mysec.x` don't match the iterator `sec`.
+ */
+function extractParamDeps(fn, paramVar) {
+    if (fn._paramDepsVar === paramVar) return fn._paramDeps;
+    const src = String(fn);
+    const re = new RegExp(`(?:^|[^.\\w$])${paramVar}\\.([a-zA-Z_$][a-zA-Z0-9_$]*)`, 'g');
+    const deps = [];
+    let m;
+    while ((m = re.exec(src)) !== null) {
+        if (deps.indexOf(m[1]) === -1) deps.push(m[1]);
+    }
+    fn._paramDeps = deps;
+    fn._paramDepsVar = paramVar;
+    return deps;
 }
 
 /**
@@ -792,11 +871,15 @@ export function ensureForStamp(def) {
         def._stamp = stampContainer;
         def._stampChildCount = stampContainer.childNodes.length;
         def._descs = decodeBindingDescs(def.binding, def.eval, def.event);
-        // Rows are eligible for in-place item replacement (forLoopSet)
-        // unless a binding captures the old item at bind time: dotted
-        // two-way binds resolve their target object once.
+        // Rows are eligible for in-place item replacement (forLoopSet) unless a
+        // binding is pinned to the old item: dotted two-way binds resolve their
+        // target once, and eval bindings that read the row's OWN item properties
+        // subscribe on that item (see subscribeForRowEval) — the in-place path
+        // re-evals but does NOT re-subscribe, so those rows must fully rebuild.
         def._inPlaceSafe = !def._descs.some(
-            d => d.type === BindingType.TWO_WAY && d.isDotted
+            d => (d.type === BindingType.TWO_WAY && d.isDotted)
+                || ((d.type === BindingType.ATTR_EVAL || d.type === BindingType.TEXT_EVAL)
+                    && d.evalFn && extractParamDeps(d.evalFn, def.iterator).length > 0)
         );
         // Bubbling event types used by rows → delegated container listeners.
         const delegated = new Set();
@@ -851,15 +934,9 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                 bindNode.textContent = desc.evalFn.call(parentProxy, item, index);
                 // Subscribe to OUTER deps so changes to component state (not just the
                 // row item) re-evaluate this row; reconciliation re-evals via evalFn.
-                const outer = outerDeps(desc.deps, iteratorVar, indexVar);
-                if (outer) {
-                    for (let i = 0; i < outer.length; i++)
-                        bindings.push(addBinding(parentProxy, outer[i], bindNode, {
-                            evalFn: desc.evalFn, proxy: parentProxy, row: instance, applyFn: applyForRowText
-                        }));
-                } else {
-                    bindings.push({ node: bindNode, evalFn: desc.evalFn });
-                }
+                // Item-property deps (own + enclosing iterator) subscribe per-property.
+                subscribeForRowEval(bindings, desc, bindNode, instance, parentProxy,
+                    iteratorVar, indexVar, item, { applyFn: applyForRowText });
                 break;
             }
             case BindingType.ATTR: {
@@ -899,15 +976,8 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                     } else {
                         setAttrMerged(bindNode, desc.attr, evalValue);
                     }
-                    const outer = outerDeps(desc.deps, iteratorVar, indexVar);
-                    if (outer) {
-                        for (let i = 0; i < outer.length; i++)
-                            bindings.push(addBinding(parentProxy, outer[i], bindNode, {
-                                evalFn: desc.evalFn, proxy: parentProxy, row: instance, attributeName: desc.attr, applyFn: applyForRowAttr
-                            }));
-                    } else {
-                        bindings.push({ node: bindNode, evalFn: desc.evalFn, attributeName: desc.attr });
-                    }
+                    subscribeForRowEval(bindings, desc, bindNode, instance, parentProxy,
+                        iteratorVar, indexVar, item, { attributeName: desc.attr, applyFn: applyForRowAttr });
                 }
                 break;
             }

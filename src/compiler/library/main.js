@@ -40,6 +40,7 @@ export function compile(template, options = {}) {
 
 	// 1. Parse template into AST
 	const ast = parseTemplate(template);
+	assertNoForIfConflict(ast, componentName);
 
 	if (optimized) {
 		// OPTIMIZED: Single-pass processing
@@ -48,6 +49,29 @@ export function compile(template, options = {}) {
 
 	// LEGACY: Multi-pass processing (kept for debugging)
 	return compileLegacy(ast, componentName, options);
+}
+
+/**
+ * Reject :for and :if on the SAME element. They are two competing structural
+ * directives — the loop and the conditional each want to own the node's rendering,
+ * so the split keeps only one and the :if silently never runs per-iteration. Fail
+ * early with guidance instead of emitting that footgun. Checked on the raw AST,
+ * before the dynamic splitter separates the directives. (Mirrors Angular's
+ * one-structural-directive-per-element rule.)
+ */
+function assertNoForIfConflict(ast, componentName) {
+	walkAST(ast, (node) => {
+		if (!node || node.type !== 'element') return;
+		const a = node.attributes || {};
+		if (a[':for'] !== undefined &&
+			(a[':if'] !== undefined || a[':else-if'] !== undefined || a[':else'] !== undefined)) {
+			throw new Error(
+				`[${componentName}] :for and :if cannot be combined on the same <${node.tag}> element — ` +
+				`the :if would be ignored per-iteration. Filter the list in a computed ` +
+				`(e.g. :for="x in visibleItems") or move the :if onto a wrapping element.`
+			);
+		}
+	});
 }
 
 /**
