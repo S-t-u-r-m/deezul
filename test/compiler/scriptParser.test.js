@@ -140,4 +140,31 @@ try {
     console.error('Error:', e.message);
 }
 
+// Test 4: Regex literals in methods must not break body extraction.
+// A regex like /[&<>"]/ or /[",\n]/ carries quotes/angle-brackets/braces that
+// would desync a naive brace/string scanner (extractBalanced). Regression guard.
+console.log('4. Regex literals in methods');
+console.log('----------------------------');
+{
+    const regexSrc = 'export default Deezul.Component({\n' +
+        '    template: `<div>{{ n }}</div>`,\n' +
+        '    data: () => ({ n: 0 }),\n' +
+        '    methods: {\n' +
+        '        tags(s) { return s.replace(/[&<>"]/g, ""); },\n' +
+        '        csv(v) { return /[",\\n]/.test(v) ? \'"\' + v.replace(/"/g, \'""\') + \'"\' : v; },\n' +
+        '        slug(s) { return s.replace(/[^a-z0-9]+/gi, "-"); },\n' +
+        '        ratio(a, b) { return a / b; }\n' +
+        '    },\n' +
+        '    styles: `.x { color: red }`\n' +
+        '});';
+    const p = parseComponent(regexSrc);
+    if (!p.template) { console.error('FAIL: body not extracted (regex desynced the scanner)'); process.exit(1); }
+    if (!p.method) { console.error('FAIL: methods not extracted with regex literals'); process.exit(1); }
+    for (const m of ['tags', 'csv', 'slug', 'ratio']) {
+        if (!p.method.includes(m)) { console.error('FAIL: missing method ' + m); process.exit(1); }
+    }
+    if (!p.method.includes('a / b')) { console.error('FAIL: division operator not preserved'); process.exit(1); }
+    console.log('PASS: regex literals parsed, division preserved\n');
+}
+
 console.log('\n=== All tests complete ===');

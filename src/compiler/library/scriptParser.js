@@ -312,6 +312,34 @@ function blankStringProperties(source, propNames) {
  * @param {string} close - Closing delimiter
  * @returns {string|null} Content between delimiters (excluding delimiters)
  */
+// Keywords after which a `/` begins a REGEX literal (not division).
+const REGEX_PRECEDING_KEYWORDS = new Set([
+	'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+	'do', 'else', 'case', 'yield', 'await'
+]);
+
+/**
+ * Decide whether the `/` at `slashIndex` starts a regex literal vs. a division
+ * operator, by inspecting the previous significant token. A regex is expected at
+ * expression-start positions: after punctuation/operators, or after a keyword like
+ * `return`/`typeof`. Division follows a value (identifier, number, `)`, `]`, string).
+ * This is the standard JS lexer heuristic; the rare ambiguous case (`)` before a
+ * regex, as in `if (x) /re/.test(...)`) is uncommon in component code.
+ */
+function isRegexStart(source, slashIndex) {
+	let j = slashIndex - 1;
+	while (j >= 0 && (source[j] === ' ' || source[j] === '\t' || source[j] === '\n' || source[j] === '\r')) j--;
+	if (j < 0) return true; // start of input → regex
+	const c = source[j];
+	if ('([{,;:=!&|?+-*/%~^<>'.indexOf(c) !== -1) return true;
+	if (/[A-Za-z0-9_$]/.test(c)) {
+		let k = j;
+		while (k >= 0 && /[A-Za-z0-9_$]/.test(source[k])) k--;
+		return REGEX_PRECEDING_KEYWORDS.has(source.slice(k + 1, j + 1));
+	}
+	return false; // after a value → division
+}
+
 function extractBalanced(source, startIndex, open, close) {
 	if (source[startIndex] !== open) {
 		return null;
@@ -340,6 +368,24 @@ function extractBalanced(source, startIndex, open, close) {
 				i += 2;
 				while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
 				i += 2; // step past the closing */
+				continue;
+			}
+			// Regex literal — skip it whole so chars inside a char class ([...]),
+			// including quotes/angle-brackets/braces, don't desync string/brace
+			// tracking (e.g. `/[",\n]/` or `/[&<>"]/`). Distinguished from division
+			// by the preceding token (isRegexStart).
+			if (char === '/' && isRegexStart(source, i)) {
+				i++; // past the opening /
+				let inClass = false;
+				while (i < source.length) {
+					const rc = source[i];
+					if (rc === '\\') { i += 2; continue; }   // escaped char
+					if (rc === '\n') break;                  // regex can't span lines — bail
+					if (rc === '[') inClass = true;
+					else if (rc === ']') inClass = false;
+					else if (rc === '/' && !inClass) { i++; break; } // closing /
+					i++;
+				}
 				continue;
 			}
 		}
