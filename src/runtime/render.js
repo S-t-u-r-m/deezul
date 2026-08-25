@@ -1074,11 +1074,29 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
         const iterScope = makeIterScope(parentProxy, iteratorVar, item, indexVar, index);
         instanceNestedDynamics = [];
 
-        for (let d = 0, dLen = structure.dynamics.length; d < dLen; d++) {
+        // Resolve every nested dynamic's marker anchor BEFORE any of them render.
+        // Marker paths are positional child-node indices computed against the
+        // pristine per-row template. If resolution were interleaved with
+        // rendering (one dynamic's anchor looked up, then rendered, then the
+        // next one's anchor looked up), an earlier :if/:for that already
+        // inserted real sibling nodes would shift the live indices out from
+        // under a later dynamic's still-untouched marker path — silently
+        // capturing some earlier dynamic's REMOVABLE rendered content as the
+        // anchor instead of the permanent marker comment. That mis-capture
+        // renders fine until the real owner removes its content, at which
+        // point the later structure's insertBefore dereferences a detached
+        // node's null parentNode. Resolving all anchors up front, against the
+        // still-untouched tree, avoids the shift entirely.
+        const dLen = structure.dynamics.length;
+        const anchors = new Array(dLen);
+        for (let d = 0; d < dLen; d++) {
             const dynamic = structure.dynamics[d];
-            const anchor = dynamic.markerPath
-                ? getNodeByPath(root, dynamic.markerPath)
-                : null;
+            anchors[d] = dynamic.markerPath ? getNodeByPath(root, dynamic.markerPath) : null;
+        }
+
+        for (let d = 0; d < dLen; d++) {
+            const dynamic = structure.dynamics[d];
+            const anchor = anchors[d];
 
             if (!anchor) {
                 logger.warn('Nested marker not found for dynamic', dynamic);
