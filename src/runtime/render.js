@@ -979,7 +979,20 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
             case BindingType.TEXT: {
                 const value = resolveIterationValue(desc.prop, iteratorVar, item, indexVar, index, parentProxy);
                 bindNode.textContent = value;
-                bindings.push({ node: bindNode, property: desc.prop, applyFn: desc.applyFn });
+                // A bare (non-dotted) prop here is never the row's own data - the
+                // compiler forces dotted iterator access (`item.x`) into TEXT_EVAL
+                // (see processor.js's loopVars check) specifically so it can be
+                // resolved and re-subscribed per row. So `desc.prop` is either the
+                // iterator/index var itself (identity changes ride the array-level
+                // reconcile, no live binding needed) or outer component state, which
+                // - unlike the item/index case - DOES need a real subscription: it
+                // won't be re-rendered by any row reconcile, so without addBinding it
+                // renders once at row-creation and silently never updates again.
+                if (desc.prop !== iteratorVar && desc.prop !== indexVar) {
+                    bindings.push(addBinding(parentProxy, desc.prop, bindNode, { type: 'text', applyFn: applyText }));
+                } else {
+                    bindings.push({ node: bindNode, property: desc.prop, applyFn: desc.applyFn });
+                }
                 break;
             }
             case BindingType.TEXT_EVAL: {
@@ -1008,7 +1021,18 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                     } else {
                         setAttrMerged(bindNode, desc.attr, value);
                     }
-                    bindings.push({ node: bindNode, property: desc.prop, attributeName: desc.attr, applyFn: isBool ? applyBoolAttr : applyAttr });
+                    // See the TEXT case above: a bare prop here is always the
+                    // iterator/index var itself or outer component state - only the
+                    // latter needs a live subscription (e.g. DropdownC's per-option
+                    // `:class="hiddenClass"`, which never re-applies after the
+                    // initial render without this).
+                    if (desc.prop !== iteratorVar && desc.prop !== indexVar) {
+                        bindings.push(addBinding(parentProxy, desc.prop, bindNode, {
+                            type: 'attr', attributeName: desc.attr, applyFn: isBool ? applyBoolAttr : applyAttr
+                        }));
+                    } else {
+                        bindings.push({ node: bindNode, property: desc.prop, attributeName: desc.attr, applyFn: isBool ? applyBoolAttr : applyAttr });
+                    }
                 }
                 break;
             }
