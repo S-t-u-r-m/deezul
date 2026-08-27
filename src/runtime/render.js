@@ -71,6 +71,16 @@ function applyPropValueIsolated(value, b) {
     applyPropValue(clonePropValue(value), b);
 }
 
+/**
+ * Expression/literal prop: re-evaluate on each dep change (there's no single
+ * parent property to read directly - the value comes from `b.evalFn`, e.g.
+ * `:title="'Department'"` or `:count="items.length + 1"`) and isolate the
+ * same way a bare `:prop` does.
+ */
+function applyPropEvalValue(_, b) {
+    applyPropValue(clonePropValue(b.evalFn.call(b.proxy)), b);
+}
+
 function applyTextEval(_, b) { b.node.textContent = b.evalFn.call(b.proxy); }
 function applyAttrEval(_, b) { setAttrMerged(b.node, b.attributeName, b.evalFn.call(b.proxy)); }
 function applyBoolAttrEval(_, b) {
@@ -88,6 +98,16 @@ function applyForRowAttr(_, b) {
         else b.node.removeAttribute(b.attributeName);
     } else {
         setAttrMerged(b.node, b.attributeName, v);
+    }
+}
+function applyForRowPropEval(_, b) {
+    const value = clonePropValue(b.evalFn.call(b.proxy, b.row.item, b.row.index));
+    if (!b.node._props) b.node._props = {};
+    b.node._props[b.propName] = value;
+    if (b.node.component && b.node.component.isMounted) {
+        b.node._propUpdating = true;
+        b.node.component.proxy[b.propName] = value;
+        b.node._propUpdating = false;
     }
 }
 
@@ -202,7 +222,7 @@ function makeIterScope(parentProxy, iteratorVar, item, indexVar, index) {
  */
 function subscribeForRowEval(bindings, desc, bindNode, instance, parentProxy, iteratorVar, indexVar, item, meta) {
     const evalFn = desc.evalFn;
-    const mk = () => ({ evalFn, proxy: parentProxy, row: instance, attributeName: meta.attributeName, applyFn: meta.applyFn });
+    const mk = () => ({ evalFn, proxy: parentProxy, row: instance, attributeName: meta.attributeName, propName: meta.propName, applyFn: meta.applyFn });
     let wired = false;
 
     // (1) The row's own item props (direct iterator, a bare param).
@@ -583,6 +603,16 @@ export function decodeBindingDescs(binding, evalFns, eventConfigs) {
                 desc.propName = strings[bytecode[dataOffset]];
                 desc.prop = strings[bytecode[dataOffset + 1]];
                 break;
+            case BindingType.PROP_EVAL: {
+                desc.propName = strings[bytecode[dataOffset]];
+                desc.evalFn = evalFns[bytecode[dataOffset + 1]];
+                const depsLen = bytecode[dataOffset + 2];
+                const deps = new Array(depsLen);
+                for (let i = 0; i < depsLen; i++) deps[i] = strings[bytecode[dataOffset + 3 + i]];
+                desc.deps = deps;
+                entryLen = 2 + pathLen + 3 + depsLen;
+                break;
+            }
         }
 
         descs.push(desc);
@@ -807,6 +837,28 @@ export function applyDescsToTree(root, descs, proxy) {
                         proxy[source] = e.detail.value;
                     }
                 });
+                break;
+            }
+            case BindingType.PROP_EVAL: {
+                // One-way only - an expression/literal has no single addressable
+                // source to write a `.share` echo back into.
+                const value = clonePropValue(desc.evalFn.call(proxy));
+                if (!node._props) node._props = {};
+                node._props[desc.propName] = value;
+                if (node.component && node.component.isMounted) {
+                    node._propUpdating = true;
+                    node.component.proxy[desc.propName] = value;
+                    node._propUpdating = false;
+                }
+                for (let i = 0, len = desc.deps.length; i < len; i++) {
+                    bindings.push(addBinding(proxy, desc.deps[i], node, {
+                        type: 'prop-eval',
+                        propName: desc.propName,
+                        evalFn: desc.evalFn,
+                        proxy,
+                        applyFn: applyPropEvalValue
+                    }));
+                }
                 break;
             }
         }
@@ -1037,6 +1089,19 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                         }
                     });
                 }
+                break;
+            }
+            case BindingType.PROP_EVAL: {
+                const value = clonePropValue(desc.evalFn.call(parentProxy, item, index));
+                if (!bindNode._props) bindNode._props = {};
+                bindNode._props[desc.propName] = value;
+                if (bindNode.component && bindNode.component.isMounted) {
+                    bindNode._propUpdating = true;
+                    bindNode.component.proxy[desc.propName] = value;
+                    bindNode._propUpdating = false;
+                }
+                subscribeForRowEval(bindings, desc, bindNode, instance, parentProxy,
+                    iteratorVar, indexVar, item, { propName: desc.propName, applyFn: applyForRowPropEval });
                 break;
             }
             case BindingType.EVENT: {

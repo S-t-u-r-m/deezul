@@ -17,7 +17,8 @@ export const BindingType = {
 	TWO_WAY: 5,
 	EVENT: 6,
 	PROP: 7,
-	PROP_SYNC: 8
+	PROP_SYNC: 8,
+	PROP_EVAL: 9
 };
 
 // ============================================================================

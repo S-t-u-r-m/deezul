@@ -351,7 +351,7 @@ export function processAST(ast, loopVars) {
 					for (const prop of properties) addString(prop);
 
 					bindings.push({
-						type: BIND_TYPE.ATTR_EVAL,
+						type: isComponent ? BIND_TYPE.PROP_EVAL : BIND_TYPE.ATTR_EVAL,
 						path,
 						attrName: cleanAttrName,
 						expression,
@@ -392,10 +392,19 @@ export function processAST(ast, loopVars) {
 						}
 					}
 
-					// Component + simple path = PROP or PROP_SYNC
+					// Component + simple path = PROP or PROP_SYNC; component + any
+					// other expression (literal, computed expression, etc.) = PROP_EVAL,
+					// so a value like :title="'Department'" or :count="n + 1" still
+					// reaches the child's reactive data instead of silently becoming
+					// an inert DOM attribute on the <dz-component> element. `.share`
+					// has no meaningful target on a non-path expression, so it's
+					// ignored there the same way it already was before PROP_EVAL
+					// existed (isEval always produced ATTR_EVAL, sync or not).
 					let type;
 					if (isComponent && !isEval) {
 						type = isSync ? BIND_TYPE.PROP_SYNC : BIND_TYPE.PROP;
+					} else if (isComponent) {
+						type = BIND_TYPE.PROP_EVAL;
 					} else {
 						type = isEval ? BIND_TYPE.ATTR_EVAL : BIND_TYPE.ATTR;
 					}

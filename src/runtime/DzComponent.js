@@ -485,8 +485,19 @@ class DzComponent extends HTMLElement {
 
 				// Register with reactivity for each data-side identifier used in any
 				// condition (compiler pre-extracted the union into structure.deps).
+				// Includes both plain data keys AND computed property names — a
+				// condition like `:if="hasSelectedEntity"` depends on a computed,
+				// not a raw data key, and still needs to re-run when ITS dependency
+				// changes; ComputedManager.invalidate already notifies dynamics
+				// registered under the computed's name (same applyDynamicsFn path
+				// as a plain data change), so registering here is sufficient.
 				// dataKeySet is hoisted across all :if structures in this component.
-				if (!dataKeySet) dataKeySet = new Set(Object.keys(this.component.data));
+				if (!dataKeySet) {
+					dataKeySet = new Set(Object.keys(this.component.data));
+					if (this.component.computed) {
+						for (const key of Object.keys(this.component.computed)) dataKeySet.add(key);
+					}
+				}
 				const ids = structure.deps || [];
 				for (let k = 0, kLen = ids.length; k < kLen; k++) {
 					if (dataKeySet.has(ids[k])) {

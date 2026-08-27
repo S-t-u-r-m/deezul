@@ -180,6 +180,7 @@ export function generateCode(compilation) {
  * EVAL bindings have deps embedded:
  * - TEXT_EVAL: [type, pathLen, ...path, evalIdx, depsLen, ...depIndices]
  * - ATTR_EVAL: [type, pathLen, ...path, attrIdx, evalIdx, depsLen, ...depIndices]
+ * - PROP_EVAL: [type, pathLen, ...path, propNameIdx, evalIdx, depsLen, ...depIndices]
  */
 function formatBytecodeArray(bytecode) {
 	if (!bytecode || bytecode.length === 0) {
@@ -221,8 +222,9 @@ function formatBytecodeArray(bytecode) {
 				entryLen = 2 + pathLen + 2;
 				break;
 
-			case BIND_TYPE.ATTR_EVAL: {
-				// [type, pathLen, ...path, attrIdx, evalIdx, depsLen, ...depIndices]
+			case BIND_TYPE.ATTR_EVAL:
+			case BIND_TYPE.PROP_EVAL: {
+				// [type, pathLen, ...path, attrIdx/propNameIdx, evalIdx, depsLen, ...depIndices]
 				const depsLen = values[dataOffset + 2];
 				entryLen = 2 + pathLen + 3 + depsLen; // +3 for attrIdx, evalIdx, depsLen
 				break;

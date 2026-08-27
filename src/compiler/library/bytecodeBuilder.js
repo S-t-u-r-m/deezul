@@ -13,6 +13,7 @@
  * - EVENT:     [type, pathLen, ...path, eventNameIdx, eventConfigIdx]
  * - PROP:      [type, pathLen, ...path, propNameIdx, sourceKeyIdx]
  * - PROP_SYNC: [type, pathLen, ...path, propNameIdx, sourceKeyIdx]
+ * - PROP_EVAL: [type, pathLen, ...path, propNameIdx, evalIdx, depsLen, ...depIndices]
  *
  * Path encoding:
  * - pathLen: number of indices in path (supports any depth)
@@ -125,6 +126,12 @@ function encodeBinding(binding, stringTable, evalFunctions, evalMap, eventCounte
 			// Prop binding: same format as ATTR [propNameIdx, sourceKeyIdx]
 			entry.push(stringTable.indexOf(binding.attrName));
 			entry.push(stringTable.indexOf(binding.properties[0]));
+			break;
+
+		case BIND_TYPE.PROP_EVAL:
+			// Expression/literal prop: same format as ATTR_EVAL [propNameIdx, evalIdx, depsLen, ...depIndices]
+			entry.push(stringTable.indexOf(binding.attrName));
+			entry.push(addEvalFunction(evalFunctions, evalMap, binding.expression, binding.properties));
 			break;
 
 		default:

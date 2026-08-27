@@ -160,6 +160,7 @@ function compileLegacy(ast, componentName, options) {
  * EVAL bindings include dependency indices inline:
  * - TEXT_EVAL: [type, pathLen, ...path, evalIdx, depsLen, ...depIndices]
  * - ATTR_EVAL: [type, pathLen, ...path, attrIdx, evalIdx, depsLen, ...depIndices]
+ * - PROP_EVAL: [type, pathLen, ...path, propNameIdx, evalIdx, depsLen, ...depIndices]
  */
 function buildBytecodeOptimized(bindings, _strings, stringMap) {
 	const evalFunctions = [];
@@ -235,6 +236,19 @@ function buildBytecodeOptimized(bindings, _strings, stringMap) {
 				entry.push(stringMap.get(binding.attrName) ?? -1);
 				entry.push(stringMap.get(binding.properties[0]) ?? -1);
 				break;
+
+			case BIND_TYPE.PROP_EVAL: {
+				// [type, pathLen, ...path, propNameIdx, evalIdx, depsLen, ...depIndices]
+				entry.push(stringMap.get(binding.attrName) ?? -1);
+				const evalIdx = addEvalFn(evalFunctions, evalMap, binding.expression);
+				entry.push(evalIdx);
+				const deps = binding.properties || [];
+				entry.push(deps.length);
+				for (const dep of deps) {
+					entry.push(stringMap.get(dep) ?? -1);
+				}
+				break;
+			}
 
 			default:
 				continue;
