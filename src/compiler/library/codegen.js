@@ -202,7 +202,6 @@ function formatBytecodeArray(bytecode) {
 
 		switch (type) {
 			case BIND_TYPE.TEXT:
-			case BIND_TYPE.TWO_WAY:
 				// [type, pathLen, ...path, refIdx]
 				entryLen = 2 + pathLen + 1;
 				break;
@@ -218,7 +217,17 @@ function formatBytecodeArray(bytecode) {
 			case BIND_TYPE.EVENT:
 			case BIND_TYPE.PROP:
 			case BIND_TYPE.PROP_SYNC:
-				// [type, pathLen, ...path, nameIdx, valueIdx/handlerType]
+			case BIND_TYPE.TWO_WAY:
+				// [type, pathLen, ...path, refIdx/nameIdx, isDotted/valueIdx]
+				// TWO_WAY carries 2 data values (refIdx + isDotted flag), same shape
+				// as ATTR/EVENT/PROP - NOT 1 like TEXT. Miscategorizing it here (as
+				// TEXT-shaped) desyncs every entry after any :bind that isn't the
+				// component's very last binding, since this walk exists purely to
+				// chunk the flat bytecode array into per-entry commented lines for
+				// the compiled output file - an entryLen too short here causes the
+				// remainder of the array to be misread and truncated (see runtime
+				// decodeBindingDescs / getBindingDataLength, which already treat
+				// TWO_WAY as 2 data values and are the actual source of truth).
 				entryLen = 2 + pathLen + 2;
 				break;
 
