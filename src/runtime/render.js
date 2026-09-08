@@ -2067,11 +2067,23 @@ function renderChainItem(item, parentProxy) {
     // renderForLoopInstance, not in chain branches.
     const nestedDynamics = [];
     if (item.dynamics && item.dynamics.length > 0) {
-        for (let d = 0, dLen = item.dynamics.length; d < dLen; d++) {
+        // Resolve EVERY nested marker anchor against the pristine branch tree
+        // BEFORE any nested dynamic renders — same hazard as renderForLoopInstance:
+        // an earlier sibling :if/:for that inserts nodes shifts the live child
+        // indices, so a later dynamic's marker path (still expressed against the
+        // template) would resolve to the wrong node. Symptom: a <b :if> inside a
+        // <p> inside an :if branch silently never renders (or, when the wrong
+        // node is later removed, insertBefore throws on a null parentNode).
+        const dLen = item.dynamics.length;
+        const anchors = new Array(dLen);
+        for (let d = 0; d < dLen; d++) {
             const dynamic = item.dynamics[d];
-            const anchor = dynamic.markerPath
-                ? getNodeByPath(root, dynamic.markerPath)
-                : null;
+            anchors[d] = dynamic.markerPath ? getNodeByPath(root, dynamic.markerPath) : null;
+        }
+
+        for (let d = 0; d < dLen; d++) {
+            const dynamic = item.dynamics[d];
+            const anchor = anchors[d];
 
             if (!anchor) {
                 logger.warn('Nested marker not found for dynamic', dynamic);
