@@ -315,6 +315,29 @@ Examples:
   deezul-compile --watch src/ --out compiled/
 ```
 
+## Dev Server & Build
+
+Run from an app directory (the one with `index.html` and `src/`):
+
+```bash
+npx deezul-dev          # serve the app, compiling src/ on request
+npx deezul-dev --dist   # serve dist/, rebuilding only what changed on each save
+npx deezul-build        # write a deployable dist/
+```
+
+`deezul-build` and `deezul-dev --dist` run the same pipeline, so with `--dist` you are
+always testing the real build. Each save pushes only what changed: an edited component
+recompiles alone; any other edit re-syncs the pages, scripts and assets, rewriting only
+files whose output differs and removing ones nothing references any more. The
+live-reload script is injected as pages are served, so `index.html` doesn't need one.
+
+`dist/` contains every root-level `*.html`, `main.js`, `*.config.js`, `favicon.*`,
+`assets/`, `public/` (copied into the dist root), the runtime, compiled components, and
+every local file those reference — `import`/`export … from`, `import '…'`, literal
+`import('…')`, `<script src>`, `<link href>` and `<img src>`, followed transitively. A
+reference to a missing file is reported. Imports assembled at runtime and URLs fetched
+by scripts are not followed; put those files in `public/`.
+
 ## Key Patterns
 
 1. **Data must be a factory function**: `data: () => ({})` not `data: {}`

@@ -7,93 +7,31 @@
  *
  * Assembles a self-contained, hostable dist/ folder:
  *   dist/
- *     index.html            (app shell, dev live-reload script stripped)
- *     main.js, *.config.js  (app entry + configs)
- *     favicon.*             (if present)
- *     deezul.esm.js         (runtime, from this package's dist)
+ *     *.html                 (every root page, dev live-reload lines stripped)
+ *     main.js, *.config.js   (app entry + configs)
+ *     favicon.*              (if present)
+ *     deezul.esm.js          (runtime, from this package's dist)
  *     compiled/*.compiled.js (components compiled from src/ — the paths `{ ref, src }`
  *                            module entries resolve to; see src/runtime/modulePaths.js)
- *     <public/ contents>    (copied verbatim if a public/ dir exists)
+ *     assets/                (path-preserving)
+ *     <public/ contents>     (copied verbatim if a public/ dir exists)
+ *     + every local file the pages and scripts import, followed transitively
  *
  * Deploying is then just: upload dist/ (or serve it). Nothing else is needed —
  * src/, node_modules/, and package files do not ship.
  *
- * Paths: the app being built is process.cwd() (the consumer); the runtime bundle
- * is resolved relative to this file (inside the deezul package).
+ * The work is done by pipeline.js, which `deezul-dev --dist` shares — so a dev server
+ * serving dist/ is serving exactly this output.
  */
-import { readdir, mkdir, writeFile, copyFile, readFile, rm, cp } from 'fs/promises';
 import { existsSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, resolve, join, basename, extname, relative } from 'path';
-import { compileFileToCode } from '../compiler/library/main.js';
-import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
+import { createPipeline } from './pipeline.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = process.cwd();
-const srcDir = resolve(ROOT, 'src');
-const distDir = resolve(ROOT, 'dist');
-const compiledDir = resolve(distDir, COMPILED_DIR);
-const runtimeSrc = resolve(__dirname, '../../dist/deezul.esm.js');
+const pipeline = createPipeline(process.cwd());
 
-if (!existsSync(srcDir)) {
-    console.error(`deezul-build: no src/ directory found in ${ROOT}`);
+if (!existsSync(pipeline.srcDir)) {
+    console.error(`deezul-build: no src/ directory found in ${pipeline.root}`);
     process.exit(1);
 }
 
-// Fresh dist/ every build
-await rm(distDir, { recursive: true, force: true });
-await mkdir(compiledDir, { recursive: true });
-
-// 1. Compile components -> dist/compiled/ (recursively; subfolders under src/
-//    are preserved so view/, layout/, component/ etc. map 1:1 into compiled/).
-async function collectJs(dir) {
-    const found = [];
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) found.push(...await collectJs(full));
-        else if (entry.name.endsWith('.js')) found.push(full);
-    }
-    return found;
-}
-const files = await collectJs(srcDir);
-for (const file of files) {
-    const code = await compileFileToCode(file);
-    const rel = relative(srcDir, file);                       // e.g. component/SectionBlock.js
-    const out = join(dirname(rel), basename(rel, extname(rel)) + COMPILED_EXT);
-    const dest = join(compiledDir, out);
-    await mkdir(dirname(dest), { recursive: true });
-    await writeFile(dest, code, 'utf-8');
-    console.log(`Compiled ${rel} -> ${COMPILED_DIR}/${out.split(/[\\/]/).join('/')}`);
-}
-
-// 2. Runtime -> dist/deezul.esm.js
-await copyFile(runtimeSrc, join(distDir, 'deezul.esm.js'));
-console.log(`Copied runtime -> deezul.esm.js`);
-
-// 3. App shell: index.html (reload line stripped), main.js, *.config.js, favicon.*
-//    plus a public/ directory copied verbatim if present.
-const entries = await readdir(ROOT, { withFileTypes: true });
-for (const e of entries) {
-    if (e.isFile()) {
-        const name = e.name;
-        if (name === 'index.html') {
-            const html = await readFile(join(ROOT, name), 'utf-8');
-            // Drop the dev-only live-reload line (it points at the dev server's /__reload).
-            const stripped = html.split('\n').filter(l => !l.includes('__reload')).join('\n');
-            await writeFile(join(distDir, name), stripped, 'utf-8');
-            console.log(`Copied index.html (live-reload stripped)`);
-        } else if (name === 'main.js' || /\.config\.js$/.test(name) || /^favicon\.(ico|png|svg)$/.test(name)) {
-            await copyFile(join(ROOT, name), join(distDir, name));
-            console.log(`Copied ${name}`);
-        }
-    } else if (e.isDirectory() && e.name === 'public') {
-        await cp(join(ROOT, 'public'), distDir, { recursive: true });
-        console.log(`Copied public/ -> dist/`);
-    } else if (e.isDirectory() && e.name === 'assets') {
-        // Copied path-preserving (dist/assets/) so /assets/... URLs match dev.
-        await cp(join(ROOT, 'assets'), join(distDir, 'assets'), { recursive: true });
-        console.log(`Copied assets/ -> dist/assets/`);
-    }
-}
-
-console.log(`\nBuilt ${files.length} component(s) -> dist/  (ready to host)`);
+const count = await pipeline.buildAll();
+console.log(`\nBuilt ${count} component(s) -> dist/  (ready to host)`);
