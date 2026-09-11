@@ -90,8 +90,8 @@ Deezul.init({
     rootElement: 'app',
 
     modules: [
-        { ref: 'home-page', path: 'compiled/HomePage.compiled.js' },
-        { ref: 'about-page', path: 'compiled/AboutPage.compiled.js' }
+        { ref: 'home-page', src: 'HomePage.js' },
+        { ref: 'about-page', src: 'AboutPage.js' }
     ],
 
     routes: [
@@ -100,6 +100,31 @@ Deezul.init({
     ]
 });
 ```
+
+### Module Entries
+
+Name a component by its **source file** under `src/` — you never write a compiled path:
+
+```javascript
+modules: [
+    { ref: 'dz-button',  src: 'component/Button.js' },   // src/component/Button.js
+    { ref: 'app-layout', src: 'layout/AppLayout.js' }
+]
+```
+
+`src` resolves to `./compiled/component/Button.compiled.js` — the URL `deezul-dev`
+compiles on request, the file `deezul-build` writes, and what
+`deezul-compile src/ --out compiled/` produces. Subdirectories are mirrored; a leading
+`./` or `src/` and the `.js` extension are optional.
+
+| Entry | Use for |
+|-------|---------|
+| `{ ref, src }` | A component compiled by the standard tooling (recommended) |
+| `{ ref, path }` | An explicit module URL — a custom compile layout or externally hosted module |
+| `{ ref, data }` | An inline, already-loaded definition |
+| `{ ref, type: 'data', data \| path }` | A data store (stores are not compiled, so no `src`) |
+
+Giving an entry both `src` and `path` is an error.
 
 ## Template Syntax
 

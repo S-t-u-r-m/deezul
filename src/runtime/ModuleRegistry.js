@@ -26,6 +26,7 @@ import { createReactiveData, addChangeListener, registerUpdateCallback } from '.
 import { deepClone } from './helpers.js';
 import { createLogger } from './Logger.js';
 import { isReservedPrefix } from './LibraryComponents.js';
+import { modulePath } from './modulePaths.js';
 
 // Minimal pass-through handlers for getCopy() clones — plain reads/writes,
 // no persistence, no watcher notifications.
@@ -166,7 +167,7 @@ export function createModuleRegistry(name, options = {}) {
             const mod = modules[i];
             register(
                 mod.ref,
-                mod.path || mod.data || mod.config,
+                modulePath(mod) || mod.data || mod.config,
                 {
                     persistent: mod.persistent !== false,
                     metadata: mod.metadata || {},

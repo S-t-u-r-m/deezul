@@ -10,6 +10,10 @@
  * fly; /deezul.esm.js is served from this package's own dist build. Saving a
  * file pings the browser to reload, which triggers a fresh compile next request.
  *
+ * That URL is exactly what a `{ ref, src: '<Name>.js' }` module entry resolves to:
+ * the convention is owned by src/runtime/modulePaths.js, shared with the runtime and
+ * deezul-build, so apps name source files and never write compiled paths.
+ *
  * Paths: the served app lives at process.cwd() (the consumer), while the runtime
  * bundle is resolved relative to this file (inside the deezul package).
  */
@@ -19,12 +23,16 @@ import { readFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { compileFileToCode } from '../compiler/library/main.js';
+import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
 const ROOT = process.cwd();
 const SRC_DIR = path.join(ROOT, 'src');
 const RUNTIME = path.resolve(__dirname, '../../dist/deezul.esm.js');
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const COMPILED_URL = new RegExp(`^/${escapeRe(COMPILED_DIR)}/(.+)${escapeRe(COMPILED_EXT)}$`);
 
 const MIME = {
     '.html': 'text/html',
@@ -131,7 +139,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // On-demand compile: /compiled/<Name>.compiled.js  ⇐  <cwd>/src/<Name>.js
-    const m = pathname.match(/^\/compiled\/(.+)\.compiled\.js$/);
+    const m = pathname.match(COMPILED_URL);
     if (m) {
         const srcPath = path.join(SRC_DIR, `${m[1]}.js`);
         try {

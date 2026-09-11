@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Minimal test runner for Deezul tests.
- * Runs each *.test.js file in test/compiler/ and test/runtime/ as a child
- * process. Exit code 0 if all pass, 1 if any fail.
+ * Runs each *.test.js file in test/compiler/, test/runtime/ and test/tooling/
+ * as a child process. Exit code 0 if all pass, 1 if any fail.
  */
 
 import { readdir } from 'fs/promises';
@@ -15,7 +15,7 @@ const exec = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const files = [];
-for (const dir of ['compiler', 'runtime']) {
+for (const dir of ['compiler', 'runtime', 'tooling']) {
     const testDir = join(__dirname, dir);
     try {
         for (const f of await readdir(testDir)) {

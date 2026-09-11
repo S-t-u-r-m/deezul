@@ -19,6 +19,7 @@ import { configure, getConfig, directives, logging, errors, framework } from './
 import { REBINDABLE, REBIND, PARENT_PROXY, nextTick, markRaw, toRaw } from './DataProxy.js';
 import { addGlobalStyles } from './StyleSystem.js';
 import { dz404 } from './LibraryComponents.js';
+import { modulePath } from './modulePaths.js';
 import './DzComponent.js';
 import './RouterComponent.js';
 
@@ -30,7 +31,11 @@ let initialized = false;
  * Initialize the Deezul framework
  * @param {Object} options
  * @param {string} options.rootElement - ID of the root DOM element
- * @param {Array} [options.modules] - Array of { ref, data, type? } to register
+ * @param {Array} [options.modules] - Array of { ref, src | path | data, type? } to register
+ *   - src: component source file under src/ (e.g. 'component/Button.js'); resolved
+ *     to its compiled path by modulePaths.js, so apps never write compiled paths
+ *   - path: explicit module URL, for apps that compile to their own layout
+ *   - data: inline definition or store state (already loaded)
  *   - type: 'data' → registers in dataRegistry (shared reactive stores)
  *   - type: omitted → registers in componentRegistry (UI components)
  * @param {Array} [options.routes] - Route definitions (enables SPA mode)
@@ -81,7 +86,7 @@ function init(options = {}) {
 		if (mod.type === 'data') {
 			dataRegistry.register(
 				mod.ref,
-				mod.path || mod.data,
+				modulePath(mod) || mod.data,
 				{
 					persistent: mod.persistent !== false,
 					localStorage: mod.localStorage || false,
@@ -89,7 +94,7 @@ function init(options = {}) {
 				}
 			);
 		} else {
-			componentRegistry.register(mod.ref, mod.path || mod.data);
+			componentRegistry.register(mod.ref, modulePath(mod) || mod.data);
 		}
 	}
 

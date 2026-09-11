@@ -11,7 +11,8 @@
  *     main.js, *.config.js  (app entry + configs)
  *     favicon.*             (if present)
  *     deezul.esm.js         (runtime, from this package's dist)
- *     compiled/*.compiled.js (components compiled from src/)
+ *     compiled/*.compiled.js (components compiled from src/ — the paths `{ ref, src }`
+ *                            module entries resolve to; see src/runtime/modulePaths.js)
  *     <public/ contents>    (copied verbatim if a public/ dir exists)
  *
  * Deploying is then just: upload dist/ (or serve it). Nothing else is needed —
@@ -25,12 +26,13 @@ import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve, join, basename, extname, relative } from 'path';
 import { compileFileToCode } from '../compiler/library/main.js';
+import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = process.cwd();
 const srcDir = resolve(ROOT, 'src');
 const distDir = resolve(ROOT, 'dist');
-const compiledDir = resolve(distDir, 'compiled');
+const compiledDir = resolve(distDir, COMPILED_DIR);
 const runtimeSrc = resolve(__dirname, '../../dist/deezul.esm.js');
 
 if (!existsSync(srcDir)) {
@@ -57,11 +59,11 @@ const files = await collectJs(srcDir);
 for (const file of files) {
     const code = await compileFileToCode(file);
     const rel = relative(srcDir, file);                       // e.g. component/SectionBlock.js
-    const out = join(dirname(rel), basename(rel, extname(rel)) + '.compiled.js');
+    const out = join(dirname(rel), basename(rel, extname(rel)) + COMPILED_EXT);
     const dest = join(compiledDir, out);
     await mkdir(dirname(dest), { recursive: true });
     await writeFile(dest, code, 'utf-8');
-    console.log(`Compiled ${rel} -> compiled/${out.split(/[\\/]/).join('/')}`);
+    console.log(`Compiled ${rel} -> ${COMPILED_DIR}/${out.split(/[\\/]/).join('/')}`);
 }
 
 // 2. Runtime -> dist/deezul.esm.js
