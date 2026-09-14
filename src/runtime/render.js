@@ -182,21 +182,28 @@ function resolveIterationValue(prop, iteratorVar, item, indexVar, index, parentP
 // Marker read off a scope proxy to retrieve its enclosing-iterator item map.
 const ITER_BINDINGS = Symbol('dzIterBindings');
 
-function makeIterScope(parentProxy, iteratorVar, item, indexVar, index) {
-    // Chain of enclosing iterator NAME → ITEM (the real data proxy). A nested
-    // for-row binding that reads an outer iterator's property (e.g. an inner chip's
-    // :class="sec.selected") uses this to subscribe at PROPERTY granularity on the
-    // actual item, so mutating sec.selected re-evaluates the row. Without it the
-    // binding would subscribe to the scope's whole-object 'sec' key, which only fires
-    // on identity reassignment — never on in-place mutation.
-    const parentIters = parentProxy ? parentProxy[ITER_BINDINGS] : null;
-    const iters = parentIters ? Object.assign({}, parentIters) : {};
-    if (item !== null && typeof item === 'object') iters[iteratorVar] = item;
+// `row` is the :for instance ({ item, index }), read LIVE on every access rather than
+// captured at render: a keyed reconcile can hand a reused row a NEW item object
+// (updateInstanceBindings), and everything scoped to the row — nested :if conditions,
+// nested :for sources, branch bindings, branch event arguments — must see it.
+function makeIterScope(parentProxy, iteratorVar, indexVar, row) {
     return new Proxy(parentProxy, {
         get(target, prop, receiver) {
-            if (prop === ITER_BINDINGS) return iters;
-            if (prop === iteratorVar) return item;
-            if (prop === indexVar) return index;
+            if (prop === ITER_BINDINGS) {
+                // Chain of enclosing iterator NAME → ITEM (the real data proxy). A nested
+                // for-row binding that reads an outer iterator's property (e.g. an inner chip's
+                // :class="sec.selected") uses this to subscribe at PROPERTY granularity on the
+                // actual item, so mutating sec.selected re-evaluates the row. Without it the
+                // binding would subscribe to the scope's whole-object 'sec' key, which only fires
+                // on identity reassignment — never on in-place mutation.
+                const parentIters = target ? target[ITER_BINDINGS] : null;
+                const iters = parentIters ? Object.assign({}, parentIters) : {};
+                const item = row.item;
+                if (item !== null && typeof item === 'object') iters[iteratorVar] = item;
+                return iters;
+            }
+            if (prop === iteratorVar) return row.item;
+            if (prop === indexVar) return row.index;
             return Reflect.get(target, prop, receiver);
         },
         has(target, prop) {
@@ -925,9 +932,10 @@ export function ensureForStamp(def) {
         def._descs = decodeBindingDescs(def.binding, def.eval, def.event);
         // Rows are eligible for in-place item replacement (forLoopSet) unless a
         // binding is pinned to the old item: dotted two-way binds resolve their
-        // target once, and eval bindings that read the row's OWN item properties
-        // subscribe on that item (see subscribeForRowEval) — the in-place path
-        // re-evals but does NOT re-subscribe, so those rows must fully rebuild.
+        // target once. Rows whose eval bindings read the row's OWN item properties
+        // (see subscribeForRowEval) also rebuild on this path, conservatively —
+        // updateInstanceBindings does move those subscriptions to a new item, and
+        // the keyed reconcile path relies on that.
         def._inPlaceSafe = !def._descs.some(
             d => (d.type === BindingType.TWO_WAY && d.isDotted)
                 || ((d.type === BindingType.ATTR_EVAL || d.type === BindingType.TEXT_EVAL)
@@ -1160,7 +1168,7 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
     // structures; non-iterator deps fall back to parentProxy.
     let instanceNestedDynamics = null;
     if (structure.dynamics && structure.dynamics.length > 0) {
-        const iterScope = makeIterScope(parentProxy, iteratorVar, item, indexVar, index);
+        const iterScope = makeIterScope(parentProxy, iteratorVar, indexVar, instance);
         instanceNestedDynamics = [];
 
         // Resolve every nested dynamic's marker anchor BEFORE any of them render.
@@ -1205,7 +1213,8 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                         ...dynamic,
                         instances: [],
                         anchor,
-                        parentProxy: iterScope
+                        parentProxy: iterScope,
+                        resolveSource
                     };
                     nestedStructure.updateFn = () => {
                         const newCollection = resolveSource();
@@ -1213,19 +1222,7 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                     };
                     renderForLoop(nestedStructure, collection, iterScope, anchor);
                     instanceNestedDynamics.push(nestedStructure);
-
-                    const baseProp = dynamic.sourceBase
-                        || (dynamic.source && dynamic.source.indexOf('.') !== -1
-                            ? dynamic.source.substring(0, dynamic.source.indexOf('.'))
-                            : dynamic.source);
-                    if (baseProp === iteratorVar && dynamic.sourceFn) {
-                        const iterDeps = extractIteratorDeps(dynamic.sourceFn, iteratorVar);
-                        for (let k = 0; k < iterDeps.length; k++) {
-                            addDynamicStructure(item, iterDeps[k], nestedStructure);
-                        }
-                    } else if (baseProp) {
-                        addDynamicStructure(parentProxy, baseProp, nestedStructure);
-                    }
+                    registerRowNestedDeps(nestedStructure, item, parentProxy, iteratorVar);
                 }
             } else if (dynamic.type === 'if') {
                 const nestedStructure = {
@@ -1238,26 +1235,7 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                 };
                 renderConditional(nestedStructure, iterScope, anchor);
                 instanceNestedDynamics.push(nestedStructure);
-
-                const ids = nestedStructure.deps || [];
-                for (let k = 0, kLen = ids.length; k < kLen; k++) {
-                    const id = ids[k];
-                    if (id === iteratorVar) {
-                        const condEvals = nestedStructure.condEvals || [];
-                        const seen = new Set();
-                        for (let c = 0; c < condEvals.length; c++) {
-                            const iterDeps = extractIteratorDeps(condEvals[c], iteratorVar);
-                            for (let p = 0; p < iterDeps.length; p++) {
-                                if (!seen.has(iterDeps[p])) {
-                                    seen.add(iterDeps[p]);
-                                    addDynamicStructure(item, iterDeps[p], nestedStructure);
-                                }
-                            }
-                        }
-                    } else {
-                        addDynamicStructure(parentProxy, id, nestedStructure);
-                    }
-                }
+                registerRowNestedDeps(nestedStructure, item, parentProxy, iteratorVar);
             }
         }
     }
@@ -1576,14 +1554,164 @@ function forLoopClear(structure) {
 }
 
 /**
+ * Register a row's nested :for/:if structure with the reactivity maps. Dependencies
+ * rooted at the row's iterator (`this.row.on`, `this.sec.chips`) register on the row's
+ * item at property granularity, so an in-place mutation fires exactly this row's
+ * structure; everything else registers on the row's parent proxy. Shared by first
+ * render and by a keyed rebind to a new item (after unregisterStructure dropped the
+ * old registrations).
+ */
+function registerRowNestedDeps(nestedStructure, item, parentProxy, iteratorVar) {
+    const itemIsObj = item !== null && typeof item === 'object';
+    if (nestedStructure.type === 'for') {
+        const baseProp = nestedStructure.sourceBase
+            || (nestedStructure.source && nestedStructure.source.indexOf('.') !== -1
+                ? nestedStructure.source.substring(0, nestedStructure.source.indexOf('.'))
+                : nestedStructure.source);
+        if (baseProp === iteratorVar && nestedStructure.sourceFn) {
+            if (!itemIsObj) return;
+            const iterDeps = extractIteratorDeps(nestedStructure.sourceFn, iteratorVar);
+            for (let k = 0; k < iterDeps.length; k++) {
+                addDynamicStructure(item, iterDeps[k], nestedStructure);
+            }
+        } else if (baseProp) {
+            addDynamicStructure(parentProxy, baseProp, nestedStructure);
+        }
+        return;
+    }
+
+    const ids = nestedStructure.deps || [];
+    for (let k = 0, kLen = ids.length; k < kLen; k++) {
+        const id = ids[k];
+        if (id === iteratorVar) {
+            if (!itemIsObj) continue;
+            const condEvals = nestedStructure.condEvals || [];
+            const seen = new Set();
+            for (let c = 0; c < condEvals.length; c++) {
+                const iterDeps = extractIteratorDeps(condEvals[c], iteratorVar);
+                for (let p = 0; p < iterDeps.length; p++) {
+                    if (!seen.has(iterDeps[p])) {
+                        seen.add(iterDeps[p]);
+                        addDynamicStructure(item, iterDeps[p], nestedStructure);
+                    }
+                }
+            }
+        } else {
+            addDynamicStructure(parentProxy, id, nestedStructure);
+        }
+    }
+}
+
+/**
+ * A reused keyed row now holds a new item: bring its nested :if/:for structures along.
+ * The row scope already reads the new item (makeIterScope reads the instance live);
+ * what's stale is each structure's subscriptions and what it last rendered.
+ */
+function refreshRowNestedDynamics(structure, instance) {
+    const { parentProxy } = structure;
+    const iteratorVar = structure.iterator;
+    const item = instance.item;
+    const nested = instance.nestedDynamics;
+    for (let i = 0, len = nested.length; i < len; i++) {
+        const s = nested[i];
+        unregisterStructure(s);
+        registerRowNestedDeps(s, item, parentProxy, iteratorVar);
+        if (s.type === 'for') {
+            const collection = s.resolveSource ? s.resolveSource() : null;
+            if (Array.isArray(collection)) {
+                addArrayForLoop(collection, s);
+                forLoopReconcile(s, collection);
+            } else if (!collection) {
+                forLoopReconcile(s, []);
+            } else {
+                // Map/Set source: no keyed reconcile for those — re-render the loop.
+                clearAllInstances(s);
+                renderForLoop(s, collection, s.parentProxy, s.anchor);
+            }
+        } else {
+            refreshRowConditional(s);
+        }
+    }
+}
+
+/**
+ * Re-evaluate a row's nested :if after its item changed. A branch switch re-renders as
+ * usual. An UNCHANGED branch keeps its DOM — so focus and input state inside it survive
+ * — and re-applies its bindings, which evaluate through the row scope and therefore read
+ * the new item (branch event handlers resolve their arguments through that scope too).
+ * A branch holding its own nested dynamics or directives is re-rendered instead: those
+ * capture state that re-applying bindings can't reach.
+ */
+function refreshRowConditional(s) {
+    const scope = s.parentProxy;
+    const before = s.activeBranchIndex;
+    updateConditional(s, scope);
+    const branch = s.activeInstance;
+    if (!branch || s.activeBranchIndex !== before) return;
+
+    if ((branch.nestedDynamics && branch.nestedDynamics.length > 0)
+        || (branch.directiveInstances && branch.directiveInstances.length > 0)) {
+        removeInstance(branch);
+        s.activeInstance = null;
+        s.activeBranchIndex = -1;
+        updateConditional(s, scope);
+        return;
+    }
+
+    const bindings = branch.bindings;
+    if (!bindings) return;
+    for (let i = 0, len = bindings.length; i < len; i++) {
+        const b = bindings[i];
+        // Two-way binds resolved their target once and directives hold their own state;
+        // neither can be re-pointed by re-applying.
+        if (!b.applyFn || b.type === 'two-way' || b.type === 'directive') continue;
+        try { b.applyFn(b.evalFn ? undefined : scope[b.property], b); }
+        catch (e) { logger.warn('Re-applying a branch binding failed', e); }
+    }
+}
+
+/**
+ * Move every subscription an instance subtree holds on `oldRaw` onto `newItem`: the
+ * row's own item-property bindings (subscribeForRowEval) and, inside nested :for rows,
+ * bindings on this row's item as their ENCLOSING iterator. Entries are re-registered
+ * as-is (addBinding re-homes the same object), so every binding list stays valid.
+ */
+function moveItemSubscriptions(instance, oldRaw, newItem) {
+    const newIsObj = newItem !== null && typeof newItem === 'object';
+    const bindings = instance.bindings;
+    if (bindings) {
+        for (let i = 0, len = bindings.length; i < len; i++) {
+            const b = bindings[i];
+            if (!b._set || b.owner !== oldRaw) continue;
+            removeBinding(b);
+            if (newIsObj) addBinding(newItem, b.property, b.node, b);
+        }
+    }
+    const nested = instance.nestedDynamics;
+    if (!nested) return;
+    for (let i = 0, len = nested.length; i < len; i++) {
+        const s = nested[i];
+        if (s.instances) {
+            for (let j = 0, jLen = s.instances.length; j < jLen; j++) moveItemSubscriptions(s.instances[j], oldRaw, newItem);
+        }
+        if (s.activeInstance) moveItemSubscriptions(s.activeInstance, oldRaw, newItem);
+    }
+}
+
+/**
  * Re-apply a row's bindings for a new (item, index) pair. Extracted from
  * reconcile so the keyed path can rebind only the rows whose item or index
  * actually changed.
+ *
+ * When the ITEM changed (a keyed row reused for a new object), the row's nested
+ * :if/:for structures and its item subscriptions move to the new item as well —
+ * otherwise they stay bound to the object the row was first rendered with.
  */
 function updateInstanceBindings(structure, instance, newItem, newIndex) {
     const { parentProxy } = structure;
     const iteratorVar = structure.iterator;
     const indexVar = structure.indexVar || 'index';
+    const oldItem = instance.item;
 
     // Update instance so events/bindings see new values
     instance.item = newItem;
@@ -1611,6 +1739,14 @@ function updateInstanceBindings(structure, instance, newItem, newIndex) {
             const value = resolveIterationValue(binding.property, iteratorVar, newItem, indexVar, newIndex, parentProxy);
             setAttrMerged(binding.node, binding.attributeName, value);
         }
+    }
+
+    if (oldItem !== newItem) {
+        // Nested structures first: a reconciled inner :for creates rows that already
+        // subscribe to the new item, and reuses rows still subscribed to the old one —
+        // the walk below then moves exactly those.
+        if (instance.nestedDynamics) refreshRowNestedDynamics(structure, instance);
+        if (isObject(oldItem)) moveItemSubscriptions(instance, toRaw(oldItem), newItem);
     }
 }
 
