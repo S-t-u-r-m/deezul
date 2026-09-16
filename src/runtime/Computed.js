@@ -372,7 +372,28 @@ export class ComputedManager {
 
 	/**
 	 * Invalidate computed properties that depend on (target, key).
-	 * Re-evaluates dirty computed, fires bindings for changed values, cascades.
+	 * Re-evaluates the affected computed in dependency order, then fires
+	 * bindings, dynamics and watchers for the ones whose value changed.
+	 *
+	 * Three phases, so every computed sees its inputs' NEW values:
+	 *
+	 * 1. Mark: everything downstream of the change (direct dependents, and
+	 *    transitively the computed that read them) goes dirty before anything
+	 *    is re-evaluated. A dirty computed read during phase 2 — by a getter,
+	 *    in any order — evaluates fresh instead of returning a stale cache.
+	 *
+	 * 2. Settle, dependencies first: a computed is re-evaluated only when the
+	 *    changed key feeds it directly or one of its computed dependencies
+	 *    actually changed value. Otherwise its cache stands (marked clean
+	 *    again), so an unchanged value still cuts the cascade off.
+	 *
+	 * 3. Fire, in the same dependency order, once every value has settled —
+	 *    so a binding or watcher never observes a half-updated graph.
+	 *
+	 * The earlier single pass re-evaluated in discovery order and never
+	 * revisited a computed: with list → pageCount → current → pageItems and
+	 * list → pageItems, pageItems ran before `current` caught up, got the old
+	 * page, and was then skipped when `current` changed (it stayed stale).
 	 *
 	 * @param {Object} target - Raw data target where change occurred
 	 * @param {string} key - Property name that changed
@@ -386,43 +407,75 @@ export class ComputedManager {
 		const directly = targetMap.get(key);
 		if (!directly || directly.size === 0) return;
 
-		// Snapshot to an array — cascade may push more entries, and evaluate()
-		// inside the loop can mutate the index sets.
-		const toProcess = [...directly];
+		// Snapshot — evaluate() rewrites the index sets.
+		const direct = new Set(directly);
 
-		const processed = new Set();
-		let i = 0;
-		while (i < toProcess.length) {
-			const name = toProcess[i++];
-			if (processed.has(name)) continue;
-			processed.add(name);
-
+		// Phase 1 — mark. Computed-to-computed deps are indexed as
+		// (dataTarget, computedName).
+		const rootMap = this.depIndex.get(this.dataTarget);
+		const affected = new Map();   // name → { oldValue, wasDirty }, in discovery order
+		const queue = [...direct];
+		for (let i = 0; i < queue.length; i++) {
+			const name = queue[i];
+			if (affected.has(name)) continue;
 			const meta = this.computed.get(name);
-			const oldValue = meta.cache;
+			if (!meta) continue;
+			affected.set(name, { oldValue: meta.cache, wasDirty: meta.dirty });
 			meta.dirty = true;
-
-			// Re-evaluate
-			const newValue = this.evaluate(name);
-
-			// If value changed, fire bindings and cascade.
-			if (!Object.is(oldValue, newValue)) {
-				applyBindingsFn(this.dataTarget, name, newValue);
-				applyDynamicsFn(this.dataTarget, name, newValue);
-
-				this._invokeComputedWatcher(name, newValue, oldValue);
-
-				// Cascade via the reverse index: find computed that read THIS
-				// computed (deps stored as (dataTarget, name)).
-				const rootMap = this.depIndex.get(this.dataTarget);
-				if (rootMap) {
-					const dependents = rootMap.get(name);
-					if (dependents) {
-						for (const otherName of dependents) {
-							if (!processed.has(otherName)) toProcess.push(otherName);
-						}
-					}
+			const dependents = rootMap && rootMap.get(name);
+			if (dependents) {
+				for (const other of dependents) {
+					if (!affected.has(other)) queue.push(other);
 				}
 			}
+		}
+
+		// Phase 2 — settle each affected computed after its affected dependencies.
+		// changedByName: name → true/false once settled, VISITING while in progress.
+		const VISITING = 0;
+		const changedByName = new Map();
+		const changedInOrder = [];
+		const settle = (name) => {
+			if (changedByName.has(name)) return changedByName.get(name) === true;
+			changedByName.set(name, VISITING);
+			const meta = this.computed.get(name);
+			const entry = affected.get(name);
+			if (!meta) {
+				changedByName.set(name, false);
+				return false;
+			}
+
+			let inputsChanged = direct.has(name);
+			const computedDeps = meta.deps && meta.deps.get(this.dataTarget);
+			if (computedDeps) {
+				// Snapshot: settling a dependency never touches this computed's deps,
+				// but evaluating this one (below) replaces them.
+				for (const dep of [...computedDeps]) {
+					if (dep !== name && affected.has(dep) && settle(dep)) inputsChanged = true;
+				}
+			}
+
+			// Not dirty any more = a getter already pulled a fresh value during this pass.
+			if (meta.dirty) {
+				if (inputsChanged || entry.wasDirty) this.evaluate(name);
+				else meta.dirty = false;   // nothing it reads changed: keep the cache
+			}
+
+			const changed = !Object.is(entry.oldValue, meta.cache);
+			changedByName.set(name, changed);
+			if (changed) changedInOrder.push(name);
+			return changed;
+		};
+		for (const name of affected.keys()) settle(name);
+
+		// Phase 3 — fire. A binding can unmount this component (an :if in a
+		// parent), which destroys the manager; stop if that happens.
+		for (const name of changedInOrder) {
+			if (!this.dataTarget) return;
+			const newValue = this.evaluate(name);
+			applyBindingsFn(this.dataTarget, name, newValue);
+			applyDynamicsFn(this.dataTarget, name, newValue);
+			this._invokeComputedWatcher(name, newValue, affected.get(name).oldValue);
 		}
 	}
 
