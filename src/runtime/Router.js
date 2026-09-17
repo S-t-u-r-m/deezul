@@ -270,6 +270,16 @@ class Router {
      * @returns {Promise<boolean>}
      */
     async navigate(path, options = {}) {
+        // A #fragment belongs to the page, not the route: split it off first
+        // (it comes after the query) and keep it in the address, so links to
+        // a section (/page#staff) survive navigation.
+        let hash = '';
+        const hIdx = path.indexOf('#');
+        if (hIdx !== -1) {
+            hash = path.length > hIdx + 1 ? path.slice(hIdx) : '';
+            path = path.slice(0, hIdx) || '/';
+        }
+
         // Split the query string off before matching — routes match on the
         // pathname only; the parsed query is exposed as $route.query.
         let queryString = '';
@@ -336,7 +346,7 @@ class Router {
                 }
             }
 
-            this._updateHistory(path, {}, options.replace, queryString);
+            this._updateHistory(path, {}, options.replace, queryString, hash);
             this.currentRoute = route;
             this.currentParams = params;
             this.currentQuery = query;
@@ -352,7 +362,7 @@ class Router {
                 this.afterNavigate(to, from);
             }
 
-            this._applyScroll();
+            this._applyScroll(hash);
 
             logger.info('Navigation complete', { path, component: route.component, params });
             return true;
@@ -363,16 +373,28 @@ class Router {
 
     /**
      * Apply scroll after a successful navigation: restore the saved position
-     * for back/forward (captured in _handlePopState), otherwise scroll to
-     * top. Deferred a tick because route components mount asynchronously —
-     * best effort; the browser clamps if the new content is shorter.
+     * for back/forward (captured in _handlePopState), else scroll to the
+     * #fragment's element when the document has one by that id, otherwise
+     * scroll to top. Deferred a tick because route components mount
+     * asynchronously — best effort; the browser clamps if the new content is
+     * shorter.
+     * @param {string} [hash] - '#id' from the navigated path, or ''
      */
-    _applyScroll() {
+    _applyScroll(hash = '') {
         if (typeof window.scrollTo !== 'function') return;
         const saved = this._pendingScroll;
         this._pendingScroll = null;
         setTimeout(() => {
-            if (saved) window.scrollTo(saved.x || 0, saved.y || 0);
+            if (saved) {
+                window.scrollTo(saved.x || 0, saved.y || 0);
+                return;
+            }
+            let target = null;
+            if (hash) {
+                try { target = document.getElementById(decodeURIComponent(hash.slice(1))); }
+                catch (e) { target = null; }
+            }
+            if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView();
             else window.scrollTo(0, 0);
         }, 0);
     }
@@ -487,9 +509,29 @@ class Router {
     _handlePopState(e) {
         const path = this._stripBase(window.location.pathname) + window.location.search;
         logger.debug('Popstate', { path, state: e.state });
+        // Only the #fragment changed (an in-page link, or back/forward between
+        // two of them): not a navigation. The page stays as it is, the browser
+        // scrolls to the anchor, and hashchange listeners still see the hash.
+        if (this.currentRoute && !this.isNotFound && this._samePage(path)) {
+            logger.debug('Fragment-only change, not navigating', { hash: window.location.hash });
+            return;
+        }
         // Restore the scroll position saved into this history entry (if any)
         this._pendingScroll = (e.state && e.state._scroll) || null;
-        this.navigate(path, { replace: true });
+        this.navigate(path + window.location.hash, { replace: true });
+    }
+
+    /**
+     * Whether a pathname-plus-query is the page currently shown (the same
+     * normalized path and query that the last navigation recorded).
+     * @param {string} path
+     * @returns {boolean}
+     */
+    _samePage(path) {
+        const qIdx = path.indexOf('?');
+        const pathname = this._normalizePath(qIdx === -1 ? path : (path.slice(0, qIdx) || '/'));
+        const query = qIdx === -1 ? '' : path.slice(qIdx + 1);
+        return (query ? `${pathname}?${query}` : pathname) === this._navigatedPath;
     }
 
     /**
@@ -694,9 +736,11 @@ class Router {
      * @param {string} path
      * @param {Object} state
      * @param {boolean} replace
+     * @param {string} [queryString] - without the '?'
+     * @param {string} [hash] - '#fragment' to keep in the address, or ''
      */
-    _updateHistory(path, state = {}, replace = false, queryString = '') {
-        const url = this._addBase(path) + (queryString ? `?${queryString}` : '');
+    _updateHistory(path, state = {}, replace = false, queryString = '', hash = '') {
+        const url = this._addBase(path) + (queryString ? `?${queryString}` : '') + hash;
         const historyState = { path, ...state };
         if (replace) {
             window.history.replaceState(historyState, '', url);
@@ -721,7 +765,7 @@ class Router {
         this.isInitialized = true;
         const path = this._stripBase(window.location.pathname) + window.location.search;
         logger.info('Initializing with current path', { path });
-        this.navigate(path, { replace: true });
+        this.navigate(path + window.location.hash, { replace: true });
     }
 
     /**
