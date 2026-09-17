@@ -272,8 +272,11 @@ function generateEvalArray(evalFunctions, loopVars) {
 		if (entry && entry.accessor) {
 			// Pre-compiled accessor for dotted :bind — returns the parent object via getter,
 			// paired with a static key. Runtime reads/writes via target().key = value.
+			// In a :for row the loop variables stay bare (skipSet), so the getter takes them
+			// as parameters exactly like the row's eval functions: target(item, index).
 			const transformedTarget = transformExpression(entry.targetExpr, skipSet);
-			return `\t\t{ target: function() { return ${transformedTarget}; }, key: ${JSON.stringify(entry.key)} }`;
+			const targetParams = loopVars ? params : '';
+			return `\t\t{ target: function(${targetParams}) { return ${transformedTarget}; }, key: ${JSON.stringify(entry.key)} }`;
 		}
 		const transformed = transformExpression(entry.expression, skipSet);
 		return loopVars

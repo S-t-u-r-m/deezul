@@ -147,11 +147,54 @@ function changeEventFor(node) {
  * control-type-aware value (checked for checkboxes, Number for number
  * inputs) back into the model.
  */
-function attachTwoWay(node, bindTarget, bindKey) {
-    setInputValue(node, bindTarget[bindKey]);
+function attachTwoWay(node, bindTarget, bindKey, resolveTarget) {
+    setInputValue(node, bindTarget ? bindTarget[bindKey] : undefined);
     node.addEventListener(changeEventFor(node), (e) => {
-        bindTarget[bindKey] = readInputValue(e.target);
+        // A row-scoped target is resolved on every write: a keyed reconcile can hand the
+        // row a new item, and the input must write into that one, not the first.
+        const target = resolveTarget ? resolveTarget() : bindTarget;
+        if (target) target[bindKey] = readInputValue(e.target);
     });
+}
+
+/**
+ * Re-point a two-way binding whose target is resolved through a row (it carries
+ * resolveTarget): when the target object changed — a keyed row reused for a new item —
+ * move the subscription onto the new object, then show its value.
+ */
+function retargetTwoWay(b) {
+    const target = b.resolveTarget();
+    const raw = isObject(target) ? toRaw(target) : null;
+    if (raw !== b.owner) {
+        removeBinding(b);
+        if (raw) addBinding(target, b.property, b.node, b);
+    }
+    setInputValue(b.node, target ? target[b.property] : undefined);
+}
+
+/**
+ * Subscribe an eval binding (text, attribute, prop or directive) rendered through a
+ * scope. For a dependency that names an enclosing :for iterator — a binding inside an
+ * :if branch within a row reads `this.row.label` — subscribe on that row's ITEM, per
+ * property the expression reads, so an in-place mutation (row.label = 'x') repaints it.
+ * Subscribing on the scope's `row` key alone only fires when the whole item is
+ * replaced. Everything else subscribes on the proxy as before. `meta` builds a fresh
+ * metadata object per subscription (addBinding keeps the object it is given).
+ */
+function subscribeEvalDeps(bindings, proxy, desc, node, meta) {
+    const iters = proxy ? proxy[ITER_BINDINGS] : null;
+    for (let i = 0, len = desc.deps.length; i < len; i++) {
+        const dep = desc.deps[i];
+        const item = iters ? iters[dep] : null;
+        if (item && typeof item === 'object') {
+            const props = extractIteratorDeps(desc.evalFn, dep);
+            if (props.length > 0) {
+                for (let p = 0; p < props.length; p++) bindings.push(addBinding(item, props[p], node, meta()));
+                continue;
+            }
+        }
+        bindings.push(addBinding(proxy, dep, node, meta()));
+    }
 }
 
 /**
@@ -690,14 +733,12 @@ export function applyDescsToTree(root, descs, proxy) {
             }
             case BindingType.TEXT_EVAL: {
                 node.textContent = desc.evalFn.call(proxy);
-                for (let i = 0, len = desc.deps.length; i < len; i++) {
-                    bindings.push(addBinding(proxy, desc.deps[i], node, {
-                        type: 'text-eval',
-                        evalFn: desc.evalFn,
-                        proxy,
-                        applyFn: applyTextEval
-                    }));
-                }
+                subscribeEvalDeps(bindings, proxy, desc, node, () => ({
+                    type: 'text-eval',
+                    evalFn: desc.evalFn,
+                    proxy,
+                    applyFn: applyTextEval
+                }));
                 break;
             }
             case BindingType.ATTR: {
@@ -742,16 +783,14 @@ export function applyDescsToTree(root, descs, proxy) {
                     deferredMounts.push({ el: node, directive: desc.directive, binding: dBinding });
 
                     if (desc.directive.updated) {
-                        for (let i = 0, len = desc.deps.length; i < len; i++) {
-                            bindings.push(addBinding(proxy, desc.deps[i], node, {
-                                type: 'directive',
-                                directiveRef: desc.directive,
-                                directiveBinding: dBinding,
-                                evalFn: desc.evalFn,
-                                proxy,
-                                applyFn: applyDirectiveEvalUpdate
-                            }));
-                        }
+                        subscribeEvalDeps(bindings, proxy, desc, node, () => ({
+                            type: 'directive',
+                            directiveRef: desc.directive,
+                            directiveBinding: dBinding,
+                            evalFn: desc.evalFn,
+                            proxy,
+                            applyFn: applyDirectiveEvalUpdate
+                        }));
                     }
                 } else {
                     const isBool = typeof evalValue === 'boolean';
@@ -761,32 +800,38 @@ export function applyDescsToTree(root, descs, proxy) {
                     } else {
                         setAttrMerged(node, desc.attr, evalValue);
                     }
-                    for (let i = 0, len = desc.deps.length; i < len; i++) {
-                        bindings.push(addBinding(proxy, desc.deps[i], node, {
-                            type: 'attr-eval',
-                            attributeName: desc.attr,
-                            evalFn: desc.evalFn,
-                            proxy,
-                            applyFn: isBool ? applyBoolAttrEval : applyAttrEval
-                        }));
-                    }
+                    subscribeEvalDeps(bindings, proxy, desc, node, () => ({
+                        type: 'attr-eval',
+                        attributeName: desc.attr,
+                        evalFn: desc.evalFn,
+                        proxy,
+                        applyFn: isBool ? applyBoolAttrEval : applyAttrEval
+                    }));
                 }
                 break;
             }
             case BindingType.TWO_WAY: {
-                let bindTarget, bindKey;
                 if (desc.isDotted) {
-                    bindTarget = desc.accessor.target.call(proxy);
-                    bindKey = desc.accessor.key;
+                    // Resolved through the scope on every write and on a keyed row refresh
+                    // (retargetTwoWay): inside a row the scope reads the row's current item.
+                    const resolveTarget = () => desc.accessor.target.call(proxy);
+                    const bindTarget = resolveTarget();
+                    const bindKey = desc.accessor.key;
+                    attachTwoWay(node, bindTarget, bindKey, resolveTarget);
+                    if (isObject(bindTarget)) {
+                        bindings.push(addBinding(bindTarget, bindKey, node, {
+                            type: 'two-way',
+                            applyFn: applyValue,
+                            resolveTarget
+                        }));
+                    }
                 } else {
-                    bindTarget = proxy;
-                    bindKey = desc.prop;
+                    attachTwoWay(node, proxy, desc.prop);
+                    bindings.push(addBinding(proxy, desc.prop, node, {
+                        type: 'two-way',
+                        applyFn: applyValue
+                    }));
                 }
-                attachTwoWay(node, bindTarget, bindKey);
-                bindings.push(addBinding(bindTarget, bindKey, node, {
-                    type: 'two-way',
-                    applyFn: applyValue
-                }));
                 break;
             }
             case BindingType.EVENT: {
@@ -857,15 +902,13 @@ export function applyDescsToTree(root, descs, proxy) {
                     node.component.proxy[desc.propName] = value;
                     node._propUpdating = false;
                 }
-                for (let i = 0, len = desc.deps.length; i < len; i++) {
-                    bindings.push(addBinding(proxy, desc.deps[i], node, {
-                        type: 'prop-eval',
-                        propName: desc.propName,
-                        evalFn: desc.evalFn,
-                        proxy,
-                        applyFn: applyPropEvalValue
-                    }));
-                }
+                subscribeEvalDeps(bindings, proxy, desc, node, () => ({
+                    type: 'prop-eval',
+                    propName: desc.propName,
+                    evalFn: desc.evalFn,
+                    proxy,
+                    applyFn: applyPropEvalValue
+                }));
                 break;
             }
         }
@@ -1067,10 +1110,18 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
             }
             case BindingType.TWO_WAY: {
                 if (desc.isDotted) {
-                    const bindTarget = desc.accessor.target.call(parentProxy);
+                    // target(item, index): the accessor takes the loop variables. Resolved
+                    // against the row's CURRENT item on every write, and re-pointed when a
+                    // keyed reconcile reuses the row for a new item (updateInstanceBindings).
+                    const resolveTarget = () => desc.accessor.target.call(parentProxy, instance.item, instance.index);
+                    const bindTarget = resolveTarget();
                     const bindKey = desc.accessor.key;
-                    attachTwoWay(bindNode, bindTarget, bindKey);
-                    bindings.push({ node: bindNode, property: bindKey, applyFn: desc.applyFn });
+                    attachTwoWay(bindNode, bindTarget, bindKey, resolveTarget);
+                    if (isObject(bindTarget)) {
+                        bindings.push(addBinding(bindTarget, bindKey, bindNode, { type: 'two-way', applyFn: applyValue, resolveTarget }));
+                    } else {
+                        bindings.push({ node: bindNode, property: bindKey, type: 'two-way', resolveTarget });
+                    }
                 } else {
                     const prop = desc.prop;
                     const value = resolveIterationValue(prop, iteratorVar, item, indexVar, index, parentProxy);
@@ -1662,8 +1713,13 @@ function refreshRowConditional(s) {
     if (!bindings) return;
     for (let i = 0, len = bindings.length; i < len; i++) {
         const b = bindings[i];
-        // Two-way binds resolved their target once and directives hold their own state;
-        // neither can be re-pointed by re-applying.
+        // Dotted two-way binds re-resolve their target through the scope; directives hold
+        // their own state and can't be re-pointed by re-applying.
+        if (b.resolveTarget) {
+            try { retargetTwoWay(b); }
+            catch (e) { logger.warn('Re-pointing a branch two-way binding failed', e); }
+            continue;
+        }
         if (!b.applyFn || b.type === 'two-way' || b.type === 'directive') continue;
         try { b.applyFn(b.evalFn ? undefined : scope[b.property], b); }
         catch (e) { logger.warn('Re-applying a branch binding failed', e); }
@@ -1720,7 +1776,9 @@ function updateInstanceBindings(structure, instance, newItem, newIndex) {
     const bindings = instance.bindings;
     for (let b = 0, bLen = bindings.length; b < bLen; b++) {
         const binding = bindings[b];
-        if (binding.evalFn) {
+        if (binding.resolveTarget) {
+            retargetTwoWay(binding);
+        } else if (binding.evalFn) {
             const evalValue = binding.evalFn.call(parentProxy, newItem, newIndex);
             if (binding.attributeName) {
                 if (typeof evalValue === 'boolean') {
