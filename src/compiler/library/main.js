@@ -40,7 +40,7 @@ export function compile(template, options = {}) {
 
 	// 1. Parse template into AST
 	const ast = parseTemplate(template);
-	assertNoForIfConflict(ast, componentName);
+	assertForIfIsDecidable(ast, componentName);
 
 	if (optimized) {
 		// OPTIMIZED: Single-pass processing
@@ -52,26 +52,69 @@ export function compile(template, options = {}) {
 }
 
 /**
- * Reject :for and :if on the SAME element. They are two competing structural
- * directives — the loop and the conditional each want to own the node's rendering,
- * so the split keeps only one and the :if silently never runs per-iteration. Fail
- * early with guidance instead of emitting that footgun. Checked on the raw AST,
- * before the dynamic splitter separates the directives. (Mirrors Angular's
- * one-structural-directive-per-element rule.)
+ * :for and :if on the SAME element mean one of two different things, and which one is
+ * decidable from the condition:
+ *
+ *   :for="x in items" :if="show"      the condition is known BEFORE the loop runs, so it
+ *                                     gates the whole loop — no rows at all when false,
+ *                                     and an :else-if / :else sibling takes over. This
+ *                                     compiles: the conditional owns the node and the loop
+ *                                     is nested inside its branch.
+ *
+ *   :for="x in items" :if="x.ok"      the condition is per ITERATION. One node cannot be
+ *                                     both the loop and a per-row test, and the loop would
+ *                                     silently win, so this is still refused. Filter in a
+ *                                     computed, or put the :if on a wrapping element.
+ *
+ * Checked on the raw AST, before the dynamic splitter separates the directives.
  */
-function assertNoForIfConflict(ast, componentName) {
+function assertForIfIsDecidable(ast, componentName) {
 	walkAST(ast, (node) => {
 		if (!node || node.type !== 'element') return;
 		const a = node.attributes || {};
-		if (a[':for'] !== undefined &&
-			(a[':if'] !== undefined || a[':else-if'] !== undefined || a[':else'] !== undefined)) {
+		if (a[':for'] === undefined) return;
+		const condition = a[':if'] ?? a[':else-if'];
+		if (condition === undefined && a[':else'] === undefined) return;
+		const used = loopVarsUsedIn(condition, loopVarNames(a[':for']));
+		if (used.length) {
+			const directive = a[':if'] !== undefined ? ':if' : ':else-if';
 			throw new Error(
-				`[${componentName}] :for and :if cannot be combined on the same <${node.tag}> element — ` +
-				`the :if would be ignored per-iteration. Filter the list in a computed ` +
-				`(e.g. :for="x in visibleItems") or move the :if onto a wrapping element.`
+				`[${componentName}] ${directive} on the same <${node.tag}> element as :for tests ` +
+				`\`${used.join('`, `')}\`, which only exists inside the loop — one element cannot be ` +
+				`both the loop and a per-row test, and the loop would win. Filter the list in a computed ` +
+				`(e.g. :for="x in visibleItems") or move the ${directive} onto a wrapping element. ` +
+				`A condition that does NOT use the loop variables is fine here: it gates the whole loop.`
 			);
 		}
 	});
+}
+
+/** The names a :for expression introduces: "x, i in items" → ["x", "i"]. */
+function loopVarNames(forExpr) {
+	const match = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?\s+(?:in|of)\s+/.exec(String(forExpr || ''));
+	if (!match) return [];
+	return match[2] ? [match[1], match[2]] : [match[1]];
+}
+
+/**
+ * Which of `names` the expression actually READS. Strings are blanked first and
+ * identifiers after a dot are skipped, so `"obj.x"` and `"'x marks it'"` do not count as
+ * uses of a loop variable called x.
+ */
+function loopVarsUsedIn(expr, names) {
+	if (!names.length || !expr) return [];
+	const code = String(expr)
+		.replace(/'(?:[^'\\]|\\.)*'/g, "''")
+		.replace(/"(?:[^"\\]|\\.)*"/g, '""')
+		.replace(/`(?:[^`\\]|\\.)*`/g, '``');
+	const found = new Set();
+	const identifier = /(\.)?\b([A-Za-z_$][\w$]*)\b/g;
+	let m;
+	while ((m = identifier.exec(code)) !== null) {
+		if (m[1]) continue;                 // a property, not the variable itself
+		if (names.includes(m[2])) found.add(m[2]);
+	}
+	return [...found];
 }
 
 /**
@@ -310,7 +353,7 @@ function compileDynamicBlocksOptimized(dynamics, options, startMarkerIndex = 0) 
  */
 function compileForBlockOptimized(dynamic, markerIndex, options) {
 	// Extract template node without :for attribute
-	const templateNode = extractDynamicTemplate(dynamic.node);
+	const templateNode = extractDynamicTemplate(dynamic.node, 'for');
 
 	// Wrap in root for compilation
 	const ast = { type: 'root', children: [templateNode] };
@@ -357,8 +400,9 @@ function compileConditionalBlockOptimized(items, markerIndex, options) {
 	const chain = [];
 
 	for (const item of items) {
-		// Extract template node without conditional attributes
-		const templateNode = extractDynamicTemplate(item.node);
+		// Only the conditional attributes come off: a :for on the same element is the loop
+		// this branch gates, and stays on so the branch compiles it as a nested dynamic.
+		const templateNode = extractDynamicTemplate(item.node, 'conditional');
 
 		// Wrap in root for compilation
 		const ast = { type: 'root', children: [templateNode] };

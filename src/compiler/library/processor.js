@@ -215,7 +215,26 @@ export function processAST(ast, loopVars) {
 			return;
 		}
 
-		// Check for dynamic directives FIRST - these replace the element with a marker
+		// Check for dynamic directives FIRST - these replace the element with a marker.
+		// Conditionals are checked BEFORE :for: an element carrying both is a loop GATED by
+		// the condition (main.js has already refused the per-iteration reading), so the
+		// conditional owns the node and the :for stays on its branch template, where the
+		// branch's own compile picks it up as a nested dynamic.
+		if (attrs[':if'] !== undefined) {
+			const value = attrs[':if'];
+			const properties = extractPropertyPaths(value);
+			dynamics.push({
+				type: DYNAMIC_TYPE.IF,
+				path,
+				node,
+				condition: value,
+				properties
+			});
+			for (const prop of properties) addString(prop);
+			htmlParts.push(`<!--if-->`);
+			return;
+		}
+
 		// :for - outputs marker, element becomes loop template
 		if (attrs[':for'] !== undefined) {
 			const value = attrs[':for'];
@@ -235,23 +254,6 @@ export function processAST(ast, loopVars) {
 			// Output comment marker instead of element
 			htmlParts.push(`<!--for-->`);
 			return; // Don't render element - it's the loop template
-		}
-
-		// :if - outputs marker, starts conditional chain
-		if (attrs[':if'] !== undefined) {
-			const value = attrs[':if'];
-			const properties = extractPropertyPaths(value);
-			dynamics.push({
-				type: DYNAMIC_TYPE.IF,
-				path,
-				node,
-				condition: value,
-				properties
-			});
-			for (const prop of properties) addString(prop);
-			// Output comment marker instead of element
-			htmlParts.push(`<!--if-->`);
-			return; // Don't render element - it's a conditional branch
 		}
 
 		// :else-if - no marker (shares marker with :if), adds to conditional chain

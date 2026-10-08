@@ -78,7 +78,7 @@ export function splitDynamics(ast, dynamics) {
 					keyExpr: dynamic.keyExpr || null,
 					source: dynamic.source,
 					sourceProperties: extractSourceProperties(dynamic.source),
-					templateNode: extractDynamicTemplate(dynamic.node),
+					templateNode: extractDynamicTemplate(dynamic.node, 'for'),
 					markerIndex,
 					markerPath: dynamic.path, // Store path for marker
 					_targetPath: dynamic.path
@@ -92,7 +92,7 @@ export function splitDynamics(ast, dynamics) {
 
 			for (const item of group.items) {
 				const chainItem = {
-					templateNode: extractDynamicTemplate(item.node)
+					templateNode: extractDynamicTemplate(item.node, 'conditional')
 				};
 
 				if (item.type === DYNAMIC_TYPE.IF || item.type === DYNAMIC_TYPE.ELSE_IF) {
@@ -308,16 +308,26 @@ function createMarker(type, index) {
 /**
  * Extract template from dynamic node (clone without :for/:if attrs)
  */
-function extractDynamicTemplate(node) {
+/**
+ * The element as the block's own template: the directive being compiled comes off, and
+ * only that one. A conditional branch that also carries :for keeps it, so the branch
+ * compiles the loop as a dynamic nested inside itself — which is what ":if gates the
+ * whole loop" means. `which` is 'for' or 'conditional'; omitting it strips both, the
+ * behaviour every caller had before the two cases were told apart.
+ */
+function extractDynamicTemplate(node, which) {
 	const clone = cloneNode(node);
 
-	// Remove dynamic directives from attributes
 	if (clone.attributes) {
-		delete clone.attributes[':for'];
-		delete clone.attributes[':key'];
-		delete clone.attributes[':if'];
-		delete clone.attributes[':else-if'];
-		delete clone.attributes[':else'];
+		if (which !== 'conditional') {
+			delete clone.attributes[':for'];
+			delete clone.attributes[':key'];
+		}
+		if (which !== 'for') {
+			delete clone.attributes[':if'];
+			delete clone.attributes[':else-if'];
+			delete clone.attributes[':else'];
+		}
 	}
 
 	return clone;

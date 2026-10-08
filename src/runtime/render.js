@@ -1028,7 +1028,6 @@ export function ensureForStamp(def) {
         const stampContainer = document.createDocumentFragment();
         stampContainer.appendChild(tpl.content);
         def._stamp = stampContainer;
-        def._stampChildCount = stampContainer.childNodes.length;
         def._descs = decodeBindingDescs(def.binding, def.eval, def.event);
         // Rows are eligible for in-place item replacement (forLoopSet) unless a
         // binding is pinned to the old item: dotted two-way binds resolve their
@@ -1349,9 +1348,13 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
     }
     instance.nestedDynamics = instanceNestedDynamics;
 
-    // Collect root-level nodes — manual iteration avoids Array.from allocation.
-    // Root is always the container now, so always walk its children.
-    const childCount = structure._stampChildCount;
+    // Collect the fragment's root-level nodes as they ARE, not as the template was: a
+    // nested dynamic at the TOP LEVEL of this fragment (a branch whose element is also the
+    // :for, say) has already inserted its own nodes here, and counting the template's
+    // children would leave every one of them behind in the fragment we are about to drop.
+    // Two passes rather than a growing array, so the allocation is still exact.
+    let childCount = 0;
+    for (let n = container.firstChild; n; n = n.nextSibling) childCount++;
     const nodes = new Array(childCount);
     let child = container.firstChild;
     for (let i = 0; i < childCount; i++) {
@@ -2280,10 +2283,14 @@ export function updateConditional(structure, parentProxy) {
         const instance = renderChainItem(item, parentProxy);
         structure.activeInstance = instance;
 
-        // Insert after anchor
+        // Insert after the anchor, IN ORDER: the point to insert before is taken once,
+        // because re-reading anchor.nextSibling each time puts every node directly after
+        // the anchor and reverses the branch.
         const nodes = instance.nodes;
+        const parent = anchor.parentNode;
+        const before = anchor.nextSibling;
         for (let i = 0, len = nodes.length; i < len; i++) {
-            anchor.parentNode.insertBefore(nodes[i], anchor.nextSibling);
+            parent.insertBefore(nodes[i], before);
         }
     }
 
@@ -2313,7 +2320,6 @@ function renderChainItem(item, parentProxy) {
         const container = document.createDocumentFragment();
         container.appendChild(tpl.content);
         item._stamp = container;
-        item._stampChildCount = container.childNodes.length;
         item._descs = decodeBindingDescs(item.binding, item.eval, item.event);
     }
 
@@ -2413,8 +2419,13 @@ function renderChainItem(item, parentProxy) {
         }
     }
 
-    // Collect child nodes without Array.from allocation
-    const childCount = item._stampChildCount;
+    // Collect the fragment's root-level nodes as they ARE, not as the template was: a
+    // nested dynamic at the TOP LEVEL of this fragment (a branch whose element is also the
+    // :for, say) has already inserted its own nodes here, and counting the template's
+    // children would leave every one of them behind in the fragment we are about to drop.
+    // Two passes rather than a growing array, so the allocation is still exact.
+    let childCount = 0;
+    for (let n = container.firstChild; n; n = n.nextSibling) childCount++;
     const nodes = new Array(childCount);
     let child = container.firstChild;
     for (let i = 0; i < childCount; i++) {
