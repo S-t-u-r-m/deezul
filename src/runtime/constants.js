@@ -34,6 +34,33 @@ export function resolveDottedPath(obj, path) {
     for (let i = 0; i < parts.length && v != null; i++) v = v[parts[i]];
     return v;
 }
+/**
+ * HTML boolean attributes: their PRESENCE is the value and the text is ignored, so
+ * disabled="null" is disabled, disabled="false" is disabled, and disabled="" is disabled.
+ * A binding is therefore applied by TRUTHINESS, never written out — otherwise the idiom
+ * every other framework accepts,
+ *
+ *     <input :disabled="row.locked ? 'disabled' : null">
+ *
+ * renders disabled="null" the moment the condition is false and the control is dead for
+ * good, silently. (That shipped: an alt-text field in the Deezul CMS that could never be
+ * typed in.)
+ *
+ * Deliberately NOT here: `hidden`, which takes "until-found" as well, and the enumerated
+ * ones that look boolean but carry real strings — aria-*, contenteditable, draggable,
+ * spellcheck. aria-pressed="false" means something and must survive.
+ */
+export const BOOLEAN_ATTRS = new Set([
+    'allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default',
+    'defer', 'disabled', 'formnovalidate', 'inert', 'ismap', 'itemscope', 'loop', 'multiple',
+    'muted', 'nomodule', 'novalidate', 'open', 'playsinline', 'readonly', 'required',
+    'reversed', 'selected'
+]);
+
+export function isBooleanAttr(attr) {
+    return BOOLEAN_ATTRS.has(attr);
+}
+
 export function setAttrMerged(node, attr, value) {
     if (attr === 'class') {
         if (node._staticClass === undefined) {
@@ -47,6 +74,14 @@ export function setAttrMerged(node, attr, value) {
         // previously-set class on update.
         if (full) node.setAttribute('class', full);
         else node.removeAttribute('class');
+    } else if (BOOLEAN_ATTRS.has(attr)) {
+        // Presence is the whole meaning — see BOOLEAN_ATTRS.
+        if (value) node.setAttribute(attr, '');
+        else node.removeAttribute(attr);
+    } else if (value == null) {
+        // No value is no attribute. Writing it out gives title="null", and for anything
+        // the browser parses (href, src, width) a string that means nothing.
+        node.removeAttribute(attr);
     } else {
         node.setAttribute(attr, value);
     }
