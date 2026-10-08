@@ -34,9 +34,9 @@ globalThis.HTMLElement = window.HTMLElement;
 globalThis.CustomEvent = window.CustomEvent;
 globalThis.Event = window.Event;
 
-const { default: createReactivity } = await import('../../src/runtime/Reactivity.js');
+const { default: createReactivity, addDynamicStructure } = await import('../../src/runtime/Reactivity.js');
 const { flushSync } = await import('../../src/runtime/DataProxy.js');
-const { renderForLoop } = await import('../../src/runtime/render.js');
+const { renderForLoop, forLoopReconcile } = await import('../../src/runtime/render.js');
 const { compileComponentToCode } = await import('../../src/compiler/library/main.js');
 
 let failures = 0;
@@ -62,7 +62,12 @@ function mount(structure, data, key) {
     const anchor = document.createComment('for');
     container.appendChild(anchor);
     document.body.appendChild(container);
+    // Wired the way DzComponent.processDynamics wires a :for: reassigning the source property
+    // runs updateFn, which reconciles against the NEW array. (Without it this harness only saw
+    // reassignment through the old in-place copy, which overwrote the array being replaced.)
+    structure.updateFn = () => { if (Array.isArray(proxy[key])) forLoopReconcile(structure, proxy[key]); };
     renderForLoop(structure, proxy[key], proxy, anchor);
+    addDynamicStructure(proxy, key, structure);
     return { proxy, container };
 }
 

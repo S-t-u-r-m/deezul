@@ -743,7 +743,13 @@ class Router {
         const url = this._addBase(path) + (queryString ? `?${queryString}` : '') + hash;
         const historyState = { path, ...state };
         if (replace) {
-            window.history.replaceState(historyState, '', url);
+            // Rewriting the entry in place for the same address (loading the page, back/forward)
+            // keeps what other code stored in it — a component remembering its own state there
+            // reads it after this runs. A replace that moves to another address starts clean.
+            const here = window.location.pathname + window.location.search + window.location.hash;
+            const kept = url === here && window.history.state && typeof window.history.state === 'object'
+                ? window.history.state : null;
+            window.history.replaceState(kept ? { ...kept, ...historyState } : historyState, '', url);
         } else {
             // Save the scroll position into the entry we're leaving, so
             // back/forward can restore it.

@@ -331,6 +331,25 @@ export function addArrayForLoop(collectionRef, dynamicStructure) {
     trackMembership(dynamicStructure, forLoops);
 }
 
+/**
+ * Stop a :for structure following a collection it no longer renders - its source property
+ * was reassigned to a different collection. Without this, push/splice on the OLD array would
+ * still drive the loop's rows.
+ */
+export function removeArrayForLoop(collectionRef, dynamicStructure) {
+    if (!collectionRef || typeof collectionRef !== 'object') return;
+    const target = getRawTarget(collectionRef);
+    const forLoops = forLoopMap.get(target);
+    if (!forLoops) return;
+    forLoops.delete(dynamicStructure);
+    if (forLoops.size === 0) forLoopMap.delete(target);
+    const sets = dynamicStructure._memberships;
+    if (sets) {
+        const i = sets.indexOf(forLoops);
+        if (i !== -1) sets.splice(i, 1);
+    }
+}
+
 export function addDynamicStructure(objectRef, property, dynamicStructure) {
     const target = getRawTarget(objectRef);
     let propertyMap = dynamicsMap.get(target);
@@ -568,14 +587,6 @@ function applyMutation(target, type, meta, proxyInstance) {
         return;
     }
 
-    // forLoop reconciliation for replace-array-in-place (object handler).
-    if (type === 'reconcile') {
-        forEachLiveForLoop(target, (structure) => {
-            renderUpdates.forLoopReconcile?.(structure, meta.value);
-        });
-        return;
-    }
-
     const dispatcher = mutationDispatchers[type];
     if (!dispatcher) return;
 
@@ -784,16 +795,11 @@ const objectHandlers = {
             delete value[REBINDABLE];
         }
 
-        // Array reassignment with active :for loops — reconcile in-place so
-        // existing DOM nodes can be reused. Pre-check has already ruled out
-        // same-reference assignment.
-        if (renderUpdates && Array.isArray(oldValue) && Array.isArray(value)
-            && forLoopMap.get(oldValue)?.size > 0) {
-            reconcileArray(target, key, oldValue, value);
-            if (proxyInstance) queueAncestorNotifications(proxyInstance, target);
-            return true;
-        }
-
+        // Arrays are assigned like any other value - never copied into the array the property
+        // used to hold. That array may be referenced elsewhere (`view = children`, then
+        // `view = other` must not overwrite `children`). A :for over this property still keeps
+        // its DOM rows: its updateFn reconciles against the new array by key / item identity,
+        // and moves the loop's collection registration over (render.js forLoopReconcile).
         target[key] = value;
         // Follow this property's own dependency-bindings across the value change
         // (null↔object / object↔object / object→null) so a reassignment doesn't
@@ -830,23 +836,6 @@ function collectionSet(target, key, value, proxyInstance, oldValue) {
     target[key] = value;
     recordChange(target, key, oldValue, value);
     return true;
-}
-
-/**
- * Replace an array's contents in place while preserving its reference, so
- * existing :for DOM nodes can be reconciled instead of torn down. The new
- * array's items are copied into the old array, then a 'reconcile' mutation
- * is queued for the renderer; a force-fire change on the parent property
- * notifies bindings/dynamics (e.g., `:if="items.length > 0"`) even though
- * `target[key]` still holds the same reference.
- */
-function reconcileArray(target, key, oldArray, newArray) {
-    oldArray.length = 0;
-    for (let i = 0; i < newArray.length; i++) oldArray[i] = newArray[i];
-    oldArray.length = newArray.length;
-
-    recordMutation(oldArray, 'reconcile', { value: newArray }, null);
-    recordChange(target, key, oldArray, oldArray, true);
 }
 
 function collectionDelete(target, key) {

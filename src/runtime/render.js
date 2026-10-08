@@ -22,8 +22,8 @@
  *     a component proxy (applyDescsToTree, shared with DzComponent.js)
  */
 
-import { setRenderUpdates, addArrayForLoop, addBinding, addDynamicStructure, unregisterStructure, removeBinding } from './Reactivity.js';
-import { toRaw } from './DataProxy.js';
+import { setRenderUpdates, addArrayForLoop, removeArrayForLoop, addBinding, addDynamicStructure, unregisterStructure, removeBinding } from './Reactivity.js';
+import { toRaw, IS_PROXY } from './DataProxy.js';
 import { isObject, deepClone } from './helpers.js';
 import { parseDirectiveName, getDirective, createDirectiveBinding, callDirectiveHook, runElementCleanup } from './Directives.js';
 import {
@@ -225,11 +225,40 @@ function resolveIterationValue(prop, iteratorVar, item, indexVar, index, parentP
 // Marker read off a scope proxy to retrieve its enclosing-iterator item map.
 const ITER_BINDINGS = Symbol('dzIterBindings');
 
+/**
+ * The REACTIVE form of a row's item - what event handlers and the row's iterator scope hand
+ * out. Rows hold RAW items (identity-keyed reconcile compares them), but a handler that
+ * mutates its argument (`toggle(item)` -> `item.open = !item.open`) or reassigns an outer
+ * iterator's property (`drill(g, c)` -> `g.view = c.children`) must go through the proxy, or
+ * the write bypasses reactivity and the page never updates. The loop remembers the reactive
+ * collection it was given (`_sourceProxy`); reading the item back through it returns the one
+ * cached child proxy for that object, with its parent chain intact. Falls back to the raw item
+ * when the loop was handed a raw collection or iterates a Map/Set.
+ */
+function reactiveRowItem(structure, instance) {
+    const item = instance.item;
+    if (item === null || typeof item !== 'object' || item[IS_PROXY]) return item;
+    if (instance._px && instance._pxItem === item) return instance._px;
+    const src = structure ? structure._sourceProxy : null;
+    if (!src) return item;
+    const raw = toRaw(src);
+    if (!Array.isArray(raw)) return item;
+    let at = src[instance.index];
+    if (at === null || typeof at !== 'object' || toRaw(at) !== item) {
+        const i = raw.indexOf(item);
+        if (i === -1) return item;
+        at = src[i];
+    }
+    instance._px = at;
+    instance._pxItem = item;
+    return at;
+}
+
 // `row` is the :for instance ({ item, index }), read LIVE on every access rather than
 // captured at render: a keyed reconcile can hand a reused row a NEW item object
 // (updateInstanceBindings), and everything scoped to the row — nested :if conditions,
 // nested :for sources, branch bindings, branch event arguments — must see it.
-function makeIterScope(parentProxy, iteratorVar, indexVar, row) {
+function makeIterScope(parentProxy, iteratorVar, indexVar, row, structure) {
     return new Proxy(parentProxy, {
         get(target, prop, receiver) {
             if (prop === ITER_BINDINGS) {
@@ -245,7 +274,7 @@ function makeIterScope(parentProxy, iteratorVar, indexVar, row) {
                 if (item !== null && typeof item === 'object') iters[iteratorVar] = item;
                 return iters;
             }
-            if (prop === iteratorVar) return row.item;
+            if (prop === iteratorVar) return reactiveRowItem(structure, row);
             if (prop === indexVar) return row.index;
             return Reflect.get(target, prop, receiver);
         },
@@ -347,6 +376,34 @@ function extractIteratorDeps(fn, iteratorVar) {
     return deps;
 }
 
+/**
+ * Where a nested :for / :if inside an :if branch should subscribe for the dependency `dep`.
+ *
+ * A branch inside a :for row is rendered against the row's iterator scope. Its bindings are
+ * routed to the row item by subscribeEvalDeps; its NESTED dynamics need the same routing, or a
+ * condition reading `this.g.trail.length` subscribes to a component property literally named
+ * `g`, which never changes, and the nested :if / :for never reacts to the row. `fns` are the
+ * functions whose source names the dependency (a :for source fn, an :if's condition fns).
+ * Returns [target, property] pairs; ordinary component state passes through unchanged.
+ */
+function resolveDepTargets(proxy, dep, fns) {
+    const iters = proxy ? proxy[ITER_BINDINGS] : null;
+    const item = iters ? iters[dep] : null;
+    if (item !== null && typeof item === 'object') {
+        const pairs = [];
+        const seen = new Set();
+        for (let f = 0; f < fns.length; f++) {
+            if (typeof fns[f] !== 'function') continue;
+            const props = extractIteratorDeps(fns[f], dep);
+            for (let q = 0; q < props.length; q++) {
+                if (!seen.has(props[q])) { seen.add(props[q]); pairs.push([item, props[q]]); }
+            }
+        }
+        if (pairs.length > 0) return pairs;
+    }
+    return [[proxy, dep]];
+}
+
 // ============================================================================
 // EVENT ARGUMENT RESOLUTION
 // ============================================================================
@@ -393,14 +450,14 @@ function resolveEventArg(arg, scope, event) {
  * reorders are seen); everything else falls back to resolveEventArg against
  * the parent scope (which may itself be an outer iteration scope).
  */
-function resolveIterEventArg(arg, parentProxy, iteratorVar, indexVar, instance, event) {
-    if (arg === iteratorVar) return instance.item;
+function resolveIterEventArg(arg, parentProxy, iteratorVar, indexVar, instance, event, structure) {
+    if (arg === iteratorVar) return reactiveRowItem(structure, instance);
     if (arg === indexVar) return instance.index;
     const dot = arg.indexOf('.');
     if (dot !== -1) {
         const head = arg.slice(0, dot);
         if (head === iteratorVar || head === indexVar) {
-            let value = head === iteratorVar ? instance.item : instance.index;
+            let value = head === iteratorVar ? reactiveRowItem(structure, instance) : instance.index;
             const rest = arg.slice(dot + 1).split('.');
             for (let i = 0; i < rest.length && value != null; i++) value = value[rest[i]];
             return value;
@@ -441,7 +498,7 @@ function eventTypeOf(config) {
  * resolved args or e.target for per-node access.
  */
 function executeRowEvent(entry, e) {
-    const { config, instance, parentProxy, iteratorVar, indexVar } = entry;
+    const { config, instance, parentProxy, iteratorVar, indexVar, structure } = entry;
     try {
         if (Array.isArray(config)) {
             const methodName = config[1];
@@ -451,11 +508,11 @@ function executeRowEvent(entry, e) {
             }
             const args = new Array(config.length - 2);
             for (let i = 2; i < config.length; i++) {
-                args[i - 2] = resolveIterEventArg(config[i], parentProxy, iteratorVar, indexVar, instance, e);
+                args[i - 2] = resolveIterEventArg(config[i], parentProxy, iteratorVar, indexVar, instance, e, structure);
             }
             parentProxy[methodName](...args);
         } else if (config && config.event) {
-            config.eval.call(parentProxy, instance.item, instance.index, e);
+            config.eval.call(parentProxy, reactiveRowItem(structure, instance), instance.index, e);
         }
     } catch (err) {
         logger.error('Error in row event handler', err);
@@ -1192,7 +1249,7 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
                 if (!eventConfig) break;
                 const type = desc.eventType;
                 if (!type) break;
-                const entry = { type, config: eventConfig, instance, parentProxy, iteratorVar, indexVar };
+                const entry = { type, config: eventConfig, instance, parentProxy, iteratorVar, indexVar, structure };
                 if (desc.eventNonBubbling) {
                     // Non-bubbling events can't delegate — direct listener.
                     bindNode.addEventListener(type, (e) => executeRowEvent(entry, e));
@@ -1219,7 +1276,7 @@ function renderForLoopInstance(structure, item, index, parentProxy) {
     // structures; non-iterator deps fall back to parentProxy.
     let instanceNestedDynamics = null;
     if (structure.dynamics && structure.dynamics.length > 0) {
-        const iterScope = makeIterScope(parentProxy, iteratorVar, indexVar, instance);
+        const iterScope = makeIterScope(parentProxy, iteratorVar, indexVar, instance, structure);
         instanceNestedDynamics = [];
 
         // Resolve every nested dynamic's marker anchor BEFORE any of them render.
@@ -1388,6 +1445,10 @@ export function renderForLoop(structure, collection, parentProxy, anchor) {
     attachDelegates(anchor.parentNode, structure._delegatedEvents);
 
     addArrayForLoop(collection, structure);
+    // The collection this loop follows; forLoopReconcile moves the registration when the
+    // source property is reassigned to a different one.
+    structure._collection = toRaw(collection);
+    structure._sourceProxy = collection && collection[IS_PROXY] ? collection : null;
 
     // Iterate the RAW collection: rows must hold raw items, matching what
     // the mutation paths deliver (push items, reconcile arrays, Map/Set
@@ -1866,6 +1927,21 @@ function computeStableSet(oldIndexAt) {
  * @param {Array} newArray - New array values to reconcile against
  */
 function forLoopReconcile(structure, newArray) {
+    // Rows hold RAW items, so compare against the raw array (a source read through a proxy
+    // would hand back wrapped items and no row would ever match).
+    const given = newArray;
+    newArray = toRaw(newArray);
+    if (given !== newArray) structure._sourceProxy = given;
+    else if (structure._sourceProxy && toRaw(structure._sourceProxy) !== newArray) structure._sourceProxy = null;
+
+    // A reassigned source: follow the new array's push/splice/sort from now on, and stop
+    // following the old one - which may still be in use elsewhere and must not drive this loop.
+    if (structure._collection !== newArray) {
+        if (structure._collection) removeArrayForLoop(structure._collection, structure);
+        addArrayForLoop(newArray, structure);
+        structure._collection = newArray;
+    }
+
     const { instances, anchor, parentProxy } = structure;
     const oldLen = instances.length;
     const newLen = newArray.length;
@@ -2310,7 +2386,10 @@ function renderChainItem(item, parentProxy) {
                         || (dynamic.source && dynamic.source.indexOf('.') !== -1
                             ? dynamic.source.substring(0, dynamic.source.indexOf('.'))
                             : dynamic.source);
-                    if (baseProp) addDynamicStructure(parentProxy, baseProp, structure);
+                    if (baseProp) {
+                        const targets = resolveDepTargets(parentProxy, baseProp, [dynamic.sourceFn]);
+                        for (let t = 0; t < targets.length; t++) addDynamicStructure(targets[t][0], targets[t][1], structure);
+                    }
                 }
             } else if (dynamic.type === 'if') {
                 const structure = {
@@ -2325,8 +2404,10 @@ function renderChainItem(item, parentProxy) {
                 nestedDynamics.push(structure);
 
                 const ids = structure.deps || [];
+                const condFns = structure.condEvals || [];
                 for (let k = 0, kLen = ids.length; k < kLen; k++) {
-                    addDynamicStructure(parentProxy, ids[k], structure);
+                    const targets = resolveDepTargets(parentProxy, ids[k], condFns);
+                    for (let t = 0; t < targets.length; t++) addDynamicStructure(targets[t][0], targets[t][1], structure);
                 }
             }
         }

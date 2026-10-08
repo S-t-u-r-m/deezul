@@ -108,6 +108,34 @@ const router = createRouter({
     unsubscribe();
 }
 
+// ── State other code keeps in a history entry ──
+// A component may record its own state in the entry (a tree remembering the level that was
+// open). Back/forward to that entry, and loading the page, rewrite the entry in place; that
+// must not throw the component's state away before it can read it.
+{
+    await router.navigate('/users/1');
+    window.history.replaceState({ ...window.history.state, widget: { open: ['a', 'b'] } }, '', window.location.href);
+    await router.navigate('/users/2');
+    window.history.back();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    router._handlePopState({ state: window.history.state });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    check('back to an entry keeps state other code stored in it',
+        router.getCurrentRoute().params.id === '1' && JSON.stringify((window.history.state || {}).widget) === '{"open":["a","b"]}');
+
+    window.history.replaceState({ widget: { open: ['c'] } }, '', '/users/3');
+    router.init();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    check('init keeps state other code stored in the entry',
+        router.getCurrentRoute().params.id === '3' && JSON.stringify((window.history.state || {}).widget) === '{"open":["c"]}');
+
+    // A redirect replaces the entry with a DIFFERENT page: nothing carries over to it.
+    window.history.replaceState({ widget: { open: ['d'] } }, '', window.location.href);
+    await router.navigate('/old', { replace: true });
+    check('a replace that changes the address starts clean',
+        router.getCurrentRoute().route.component === 'home' && !(window.history.state || {}).widget);
+}
+
 if (failures > 0) {
     console.error(`\n${failures} router check(s) failed`);
     process.exit(1);

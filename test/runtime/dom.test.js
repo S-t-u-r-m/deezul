@@ -24,7 +24,7 @@ globalThis.Event = window.Event;
 // Import AFTER the DOM globals exist.
 const { default: createReactivity, addDynamicStructure, addBinding } = await import('../../src/runtime/Reactivity.js');
 const { flushSync } = await import('../../src/runtime/DataProxy.js');
-const { renderForLoop, renderConditional, updateConditional, applyDescsToTree, decodeBindingDescs } = await import('../../src/runtime/render.js');
+const { renderForLoop, forLoopReconcile, renderConditional, updateConditional, applyDescsToTree, decodeBindingDescs } = await import('../../src/runtime/render.js');
 const { createModuleRegistry } = await import('../../src/runtime/ModuleRegistry.js');
 
 let failures = 0;
@@ -50,12 +50,14 @@ function mountForLoop(items, extraStructure = {}) {
         dynamics: [],
         ...extraStructure
     };
-    structure.updateFn = (value) => {
-        if (Array.isArray(value)) {
-            // mirrors the runtime wiring in DzComponent.processDynamics
-        }
+    // Mirrors the runtime wiring in DzComponent.processDynamics: reassigning the source
+    // property runs the loop's updateFn, which reconciles against the new array.
+    structure.updateFn = () => {
+        const value = proxy.items;
+        if (Array.isArray(value)) forLoopReconcile(structure, value);
     };
     renderForLoop(structure, proxy.items, proxy, anchor);
+    addDynamicStructure(proxy, 'items', structure);
     return { proxy, container, structure };
 }
 
@@ -247,26 +249,33 @@ const texts = (container) => [...container.querySelectorAll('li')].map(li => li.
         iterator: 'item',
         dynamics: []
     };
+    // Runtime wiring (DzComponent.processDynamics): reassignment reconciles via updateFn.
+    structure.updateFn = () => { if (Array.isArray(proxy.items)) forLoopReconcile(structure, proxy.items); };
     renderForLoop(structure, proxy.items, proxy, anchor);
+    addDynamicStructure(proxy, 'items', structure);
 
     const buttons = () => [...container.querySelectorAll('button')];
     check('delegation: rows carry entries, not listeners', !!buttons()[0]._dzEvents);
 
+    // Handlers receive the row's REACTIVE item (so mutating it updates the page); it wraps
+    // the same underlying object. See rowEventItemReactive.test.js.
+    const { toRaw, IS_PROXY } = await import('../../src/runtime/DataProxy.js');
     buttons()[1].dispatchEvent(new window.Event('click', { bubbles: true }));
-    check('delegated click resolves the row item', picked.length === 1 && picked[0] === b);
+    check('delegated click resolves the row item', picked.length === 1 && toRaw(picked[0]) === b);
+    check('...as the reactive item', !!picked[0][IS_PROXY] && picked[0] === proxy.items[1]);
 
     // Rows created after the delegate was attached still fire
     const d = { id: 4 };
     proxy.items.push(d);
     flushSync();
     buttons()[3].dispatchEvent(new window.Event('click', { bubbles: true }));
-    check('delegated click works for pushed rows', picked[1] === d);
+    check('delegated click works for pushed rows', toRaw(picked[1]) === d);
 
     // After a reorder, handlers see the row's CURRENT item
     proxy.items = [d, c, b, a];
     flushSync();
     buttons()[0].dispatchEvent(new window.Event('click', { bubbles: true }));
-    check('delegated click sees current item after reorder', picked[2] === d);
+    check('delegated click sees current item after reorder', toRaw(picked[2]) === d);
 }
 
 // ── Leave animations: unmounted directive returning a Promise defers removal ──

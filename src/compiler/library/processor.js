@@ -522,6 +522,9 @@ function isSimplePath(expr) {
 
 function needsEvalFn(expr) {
 	const trimmed = expr.trim();
+	// true / false / null / undefined look like identifiers but are VALUES. Read as a path,
+	// :showAdd="true" binds to a data property named `true` - always undefined, silently.
+	if (trimmed === 'true' || trimmed === 'false' || trimmed === 'null' || trimmed === 'undefined') return true;
 	return !isSimplePath(trimmed) ||
 		trimmed.includes('?') ||
 		trimmed.includes('+') ||
