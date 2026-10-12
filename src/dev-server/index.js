@@ -3,8 +3,9 @@
  * deezul-dev — zero-config dev server.
  *
  * Run from a deezul app directory (the one containing index.html + src/):
- *   npx deezul-dev          # or add "dev": "deezul-dev" to package.json scripts
- *   npx deezul-dev --dist   # serve the real build, rebuilt on every save
+ *   npx deezul-dev              # or add "dev": "deezul-dev" to package.json scripts
+ *   npx deezul-dev --dist       # serve the real build, rebuilt on every save
+ *   npx deezul-dev --port 3000  # listen on 3000 instead of 8080 ($PORT also works)
  *
  * SOURCE MODE (default)
  * Components are compiled in-process per request — nothing is written to disk.
@@ -39,7 +40,31 @@ import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
 import { createPipeline, IGNORED_DIRS, toPosix } from '../build/pipeline.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT) || 8080;
+
+/**
+ * The port to listen on: `--port 3000`, `--port=3000`, then $PORT, then 8080.
+ * A flag beats the environment so a package.json script can pin the port of an
+ * app that runs alongside others, without depending on shell syntax.
+ */
+function resolvePort(argv, env) {
+    const i = argv.indexOf('--port');
+    const inline = argv.find((a) => a.startsWith('--port='));
+
+    let raw, source;
+    if (i !== -1) { raw = argv[i + 1]; source = '--port'; }
+    else if (inline) { raw = inline.slice('--port='.length); source = '--port'; }
+    else if (env.PORT) { raw = env.PORT; source = 'PORT'; }
+    else return 8080;
+
+    const port = Number(raw);
+    if (!raw || !Number.isInteger(port) || port < 0 || port > 65535) {
+        console.error(`deezul-dev: ${source} needs an integer from 0 to 65535, got '${raw ?? ''}'`);
+        process.exit(1);
+    }
+    return port;
+}
+
+const PORT = resolvePort(process.argv.slice(2), process.env);
 const ROOT = process.cwd();
 const SRC_DIR = path.join(ROOT, 'src');
 const DIST_DIR = path.join(ROOT, 'dist');
@@ -270,6 +295,20 @@ const server = http.createServer(async (req, res) => {
 
     if (DIST_MODE) await serveStatic(res, DIST_DIR, pathname, injectReload);
     else await serveSource(res, pathname);
+});
+
+// Without this, a port already in use dies as an unhandled 'error' event —
+// a stack trace that never names the actual problem.
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`deezul-dev: port ${PORT} is already in use. Start on another with --port <number>.`);
+        process.exit(1);
+    }
+    if (err.code === 'EACCES') {
+        console.error(`deezul-dev: not allowed to bind port ${PORT}. Ports below 1024 usually need elevation.`);
+        process.exit(1);
+    }
+    throw err;
 });
 
 server.listen(PORT, () => {

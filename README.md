@@ -320,9 +320,18 @@ Examples:
 Run from an app directory (the one with `index.html` and `src/`):
 
 ```bash
-npx deezul-dev          # serve the app, compiling src/ on request
-npx deezul-dev --dist   # serve dist/, rebuilding only what changed on each save
-npx deezul-build        # write a deployable dist/
+npx deezul-dev              # serve the app, compiling src/ on request
+npx deezul-dev --dist       # serve dist/, rebuilding only what changed on each save
+npx deezul-dev --port 3000  # listen on 3000 instead of the default 8080
+npx deezul-build            # write a deployable dist/
+```
+
+The dev server listens on `8080` unless told otherwise: `--port <n>` wins, then the
+`PORT` environment variable. Prefer the flag in a `package.json` script — it needs no
+shell-specific syntax, so it works the same on Windows and Unix:
+
+```json
+"scripts": { "dev": "deezul-dev --port 3000" }
 ```
 
 `deezul-build` and `deezul-dev --dist` run the same pipeline, so with `--dist` you are
