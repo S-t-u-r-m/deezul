@@ -27,3 +27,6 @@ npm-debug.log*
 
 # Claude session notes (scratch)
 lastsession.md
+
+# Runtime bundles (the prepare script builds these from src/runtime)
+dist/

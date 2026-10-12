@@ -29,6 +29,7 @@
     "README.md"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "cd tooling/bundler && npx rollup -c rollup.config.js",
     "build:showcase": "node examples/showcase/build.js",
     "setup": "npm install && npm run build && npm run build:showcase",
