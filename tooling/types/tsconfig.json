@@ -1,0 +1,24 @@
+{
+    // Declarations for consumers, generated from the JSDoc already in src/runtime.
+    // Not a root tsconfig on purpose: an editor opening the repo should not start
+    // type-checking the framework as a side effect of this file existing.
+    "compilerOptions": {
+        "allowJs": true,
+
+        // Emit only. The runtime is authored in JS, and checking it here would let
+        // an unrelated type complaint fail a build whose job is to publish types.
+        "checkJs": false,
+        "declaration": true,
+        "emitDeclarationOnly": true,
+
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "skipLibCheck": true,
+
+        "rootDir": "../../src/runtime",
+        "outDir": "../../types"
+    },
+    "include": ["../../src/runtime/**/*.js"]
+}

@@ -6,8 +6,10 @@
   "main": "dist/deezul.esm.js",
   "module": "dist/deezul.esm.js",
   "browser": "dist/deezul.iife.js",
+  "types": "./types/Deezul.d.ts",
   "exports": {
     ".": {
+      "types": "./types/Deezul.d.ts",
       "import": "./dist/deezul.esm.js",
       "default": "./dist/deezul.esm.js"
     },
@@ -21,6 +23,7 @@
   },
   "files": [
     "dist/",
+    "types/",
     "src/runtime/",
     "src/compiler/",
     "src/dev-server/",
@@ -29,8 +32,9 @@
     "README.md"
   ],
   "scripts": {
-    "prepare": "npm run build",
+    "prepare": "npm run build && npm run types",
     "build": "cd tooling/bundler && npx rollup -c rollup.config.js",
+    "types": "tsc -p tooling/types/tsconfig.json",
     "build:showcase": "node examples/showcase/build.js",
     "setup": "npm install && npm run build && npm run build:showcase",
     "compile": "node src/compiler/bin/cli.js",
@@ -47,7 +51,8 @@
     "@rollup/plugin-terser": "^1.0.0",
     "happy-dom": "^20.10.2",
     "http-server": "^14.1.1",
-    "rollup": "^4.0.0"
+    "rollup": "^4.0.0",
+    "typescript": "^5.6.3"
   },
   "engines": {
     "node": ">=20"

@@ -30,3 +30,6 @@ lastsession.md
 
 # Runtime bundles (the prepare script builds these from src/runtime)
 dist/
+
+# Generated declarations (the prepare script builds these from src/runtime JSDoc)
+/types/

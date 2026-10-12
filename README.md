@@ -357,6 +357,24 @@ every local file those reference — `import`/`export … from`, `import '…'`,
 reference to a missing file is reported. Imports assembled at runtime and URLs fetched
 by scripts are not followed; put those files in `public/`.
 
+## Editor Support
+
+The package ships TypeScript declarations, so `import Deezul from 'deezul'` gets
+completion and hover docs in any editor — no `@types` package and nothing to install.
+They are generated from the JSDoc in `src/runtime/` by `npm run types`, which `prepare`
+runs alongside the bundle build, so they cannot drift from the source. The runtime
+itself stays plain JavaScript.
+
+Component sources are a separate case. The compiler reads `Deezul.Component({...})` and
+emits a plain data module, so `Deezul` there is a name the compiler recognises rather
+than a value that exists at runtime — and an editor type-checking `src/` will not find
+it. Declare it once in your app:
+
+```ts
+// types/globals.d.ts
+declare const Deezul: any;
+```
+
 ## Key Patterns
 
 1. **Data must be a factory function**: `data: () => ({})` not `data: {}`
