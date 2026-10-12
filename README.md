@@ -337,8 +337,18 @@ shell-specific syntax, so it works the same on Windows and Unix:
 `deezul-build` and `deezul-dev --dist` run the same pipeline, so with `--dist` you are
 always testing the real build. Each save pushes only what changed: an edited component
 recompiles alone; any other edit re-syncs the pages, scripts and assets, rewriting only
-files whose output differs and removing ones nothing references any more. The
-live-reload script is injected as pages are served, so `index.html` doesn't need one.
+files whose output differs and removing ones nothing references any more. In this mode
+the live-reload script is injected as pages are served, so the copy in `dist/` needs
+none of its own — `deezul-build` strips the one your page carries.
+
+Both modes watch the whole app directory except `dist/`, `node_modules/` and `.git/`,
+so a save to a component under `src/`, to `index.html`, `main.js` or a config all
+reach the browser. Source mode serves your page as written and does *not* inject the
+reload script, so keep this line in `index.html`:
+
+```html
+<script>new EventSource('/__reload').onmessage = () => location.reload();</script>
+```
 
 `dist/` contains every root-level `*.html`, `main.js`, `*.config.js`, `favicon.*`,
 `assets/`, `public/` (copied into the dist root), the runtime, compiled components, and

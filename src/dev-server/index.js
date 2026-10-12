@@ -230,6 +230,15 @@ async function serveStatic(res, base, pathname, transformHtml) {
 
 // ── Startup ──────────────────────────────────────────────────────────────────
 
+// Everything in the app except generated and installed trees is an input, so a save
+// to any of it should reach the browser. Both modes watch the same set: source mode
+// used to watch only src/*.js, which left edits to index.html, main.js and the
+// configs with no reload at all.
+const isAppInput = (full) => {
+    const rel = path.relative(ROOT, full);
+    return !rel.startsWith('..') && !IGNORED_DIRS.has(toPosix(rel).split('/')[0]);
+};
+
 if (DIST_MODE) {
     if (!fs.existsSync(SRC_DIR)) {
         console.error(`deezul-dev --dist: no src/ directory found in ${ROOT}`);
@@ -241,12 +250,6 @@ if (DIST_MODE) {
     const pipeline = createPipeline(ROOT, { tolerant: true });
     const count = await pipeline.buildAll();
     console.log(`Built ${count} component(s) -> dist/`);
-
-    // Everything in the app except generated and installed trees is build input.
-    const isAppInput = (full) => {
-        const rel = path.relative(ROOT, full);
-        return !rel.startsWith('..') && !IGNORED_DIRS.has(toPosix(rel).split('/')[0]);
-    };
 
     // Saves arrive in bursts (editors write temp files, renames fire twice): collect
     // them, then apply one update at a time so passes never interleave.
@@ -264,10 +267,12 @@ if (DIST_MODE) {
                 .catch((err) => console.error('[dist]', err.message));
         }, 100);
     });
-} else if (fs.existsSync(SRC_DIR)) {
-    // A save just pings the browser; the next request recompiles on the fly.
+} else {
+    // A save just pings the browser; the next request serves and recompiles on the
+    // fly, so nothing needs rebuilding here. No src/ is required either -- an app
+    // that is still only an index.html reloads the same way.
     let debounce = null;
-    watchTree(SRC_DIR, { accept: (full) => full.endsWith('.js') }, () => {
+    watchTree(ROOT, { accept: isAppInput, descend: isAppInput }, () => {
         clearTimeout(debounce);
         debounce = setTimeout(sendReload, 100);
     });
