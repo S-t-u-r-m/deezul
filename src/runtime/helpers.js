@@ -121,4 +121,24 @@ export function onReady(callback) {
 	}
 }
 
-
+/**
+ * The starting values a component's declared inputs describe.
+ *
+ * `schema.inputs` is a map of input name to a descriptor the page builder reads --
+ * type, label, options, and the default to start from. Only `default` means anything
+ * at runtime. An input without one still appears, as undefined, so the name exists and
+ * a binding to it resolves rather than reading through to nothing.
+ *
+ * @param {Object} [schema]
+ * @returns {Object} plain values, safe to spread
+ */
+export function schemaDefaults(schema) {
+	const inputs = schema && schema.inputs;
+	if (!inputs || typeof inputs !== 'object') return {};
+	const out = {};
+	for (const name of Object.keys(inputs)) {
+		const input = inputs[name];
+		out[name] = input && typeof input === 'object' ? input.default : undefined;
+	}
+	return out;
+}

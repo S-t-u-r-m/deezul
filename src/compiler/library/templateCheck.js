@@ -135,6 +135,25 @@ export function topLevelKeys(src) {
 }
 
 /**
+ * The input names a component declares in `schema.inputs`.
+ *
+ * These are its props, and the runtime seeds data from their defaults, so they are
+ * declared names even when data() never mentions them -- which is the point of
+ * declaring them there instead.
+ *
+ * @param {string} src - the schema object's source
+ * @returns {string[]}
+ */
+export function schemaInputNames(src) {
+    if (!src) return [];
+    const at = src.indexOf('inputs');
+    if (at === -1) return [];
+    const brace = src.indexOf('{', at);
+    if (brace === -1) return [];
+    return topLevelKeys(src.slice(brace));
+}
+
+/**
  * Keys of the object a `data` factory returns.
  * Handles `data: () => ({...})`, `data() { return {...} }` and `data: function () {...}`.
  *
@@ -271,6 +290,7 @@ export function checkTemplateTags(ast, knownRefs) {
 export function checkTemplateBindings(ast, parsed) {
     const declared = new Set([
         ...dataKeys(parsed.data),
+        ...schemaInputNames(parsed.schema),
         ...topLevelKeys(parsed.method),
         ...topLevelKeys(parsed.computed),
         ...topLevelKeys(parsed.staticData),

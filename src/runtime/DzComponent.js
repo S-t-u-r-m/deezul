@@ -9,6 +9,7 @@
  */
 
 import { componentRegistry } from './registries.js';
+import { schemaDefaults } from './helpers.js';
 import createReactivity, { addBinding, addDynamicStructure, registerUpdateCallback, unregisterUpdateCallback, removeBinding } from './Reactivity.js';
 import {
 	forLoopReconcile, renderForLoop, renderConditional, updateConditional,
@@ -220,8 +221,18 @@ class DzComponent extends HTMLElement {
 		logger.debug(`[${this.component.instanceId}] Mounting component`);
 
 	  try {
-		// Step 1: Extract data & functions from def
-		this.component.data = def.data ? def.data() : {};
+		// Step 1: Extract data & functions from def.
+		//
+		// schema.inputs is the component's public interface, and each input already
+		// carries the default the page builder offers. Seeding from it first means a
+		// prop is declared once instead of restated in data() with the same value --
+		// two places that could drift apart while the editor and the running component
+		// each believed a different one.
+		//
+		// Precedence, lowest first: schema defaults, then data(), then the parent's
+		// props (assigned a few steps below). So data() can still override a default
+		// or add state the editor never sees, and a parent still wins over both.
+		this.component.data = { ...schemaDefaults(def.schema), ...(def.data ? def.data() : {}) };
 		this.component.method = def.method || {};
 		this.component.computed = def.computed || {};
 		this.component.onCreate = validateHook(def.$created, '$created', type);

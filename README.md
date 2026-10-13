@@ -254,6 +254,28 @@ That is also how components share logic. A component still cannot import *anothe
 component* — modules are registered and loaded by the registry — but anything that is
 plain JavaScript is a normal import.
 
+## Props
+
+A prop is declared once, in `schema.inputs`, with the default it starts from:
+
+```javascript
+schema: {
+    inputs: {
+        level: { type: 'enum', options: ['info', 'warning'], default: 'info', label: 'Severity' },
+        title: { type: 'string', default: '', label: 'Title' }
+    }
+},
+template: `<div :class="level">{{ title }}</div>`
+```
+
+The runtime seeds the component's data from those defaults, so the template reads them
+like any other value and the compiler counts them as declared. Lowest precedence first:
+schema defaults, then `data()`, then whatever a parent passes — so `data()` can still
+override a default or add state the editor never sees, and a parent wins over both.
+
+Declaring an input in `data()` as well is harmless and still works; it is simply no
+longer necessary, and two copies of one default cannot drift apart if there is only one.
+
 ## Lifecycle Hooks
 
 ```javascript
