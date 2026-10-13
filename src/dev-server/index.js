@@ -38,6 +38,7 @@ import { fileURLToPath } from 'url';
 import { compileFileToCode } from '../compiler/library/main.js';
 import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
 import { createPipeline, IGNORED_DIRS, toPosix } from '../build/pipeline.js';
+import { buildManifest, manifestSource, MANIFEST_URL } from '../build/manifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -194,6 +195,16 @@ async function serveSource(res, pathname) {
             res.writeHead(500, { 'Content-Type': 'application/javascript' });
             res.end(`console.error(${JSON.stringify(`Compile error in ${m[1]}.js: ${err.message}`)});`);
         }
+        return;
+    }
+
+    // The generated module list, rebuilt per request so a new component is registered
+    // the moment it is saved.
+    if (pathname === MANIFEST_URL) {
+        const { modules, warnings } = await buildManifest(SRC_DIR);
+        for (const w of warnings) console.warn(`[modules] ${w}`);
+        res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache' });
+        res.end(manifestSource(modules));
         return;
     }
 

@@ -34,6 +34,32 @@ export function compiledPath(src) {
 }
 
 /**
+ * The ref a component source registers itself as, by convention.
+ *
+ *   'components/ListBlock.js'  -> 'list-block'
+ *   'pages/HomePage.js'        -> 'home-page'
+ *   'Home.js'                  -> null
+ *
+ * A ref becomes a custom element name, which must contain a hyphen, so a
+ * single-word file has no valid convention name and gets null -- the caller
+ * reports it and the author either renames the file or registers it by hand.
+ * Only the basename is used: a ref is a name, not a location.
+ *
+ * @param {string} src - path under src/, e.g. 'components/ListBlock.js'
+ * @returns {string|null}
+ */
+export function refFromSource(src) {
+    // Split on either separator: callers hand us whatever path.relative() gave them,
+    // which on Windows is backslashes.
+    const base = src.split('\\').join('/').split('/').pop().replace(/\.js$/, '');
+    const ref = base
+        .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+        .replace(/[_\s]+/g, '-')
+        .toLowerCase();
+    return ref.includes('-') ? ref : null;
+}
+
+/**
  * The path a module entry loads from: its `path`, or the compiled path for its
  * `src`. Undefined for entries that carry their definition inline (`data`).
  * @param {Object} mod - Module entry from Deezul.init({ modules })

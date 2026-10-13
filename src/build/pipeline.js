@@ -32,6 +32,7 @@ import { fileURLToPath } from 'url';
 import { Parser } from 'htmlparser2';
 import { compileFileToCode } from '../compiler/library/main.js';
 import { isComponentSource } from '../compiler/library/scriptParser.js';
+import { buildManifest, manifestSource, MANIFEST_NAME } from './manifest.js';
 import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -316,6 +317,13 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
             await compileOne(file);
         }
         await syncShell();
+        // The module list, written beside the components it names.
+        const { modules, warnings } = await buildManifest(srcDir);
+        for (const w of warnings) warn(`[modules] ${w}`);
+        if (await writeIfChanged(join(distDir, COMPILED_DIR, MANIFEST_NAME), manifestSource(modules))) {
+            log(`Wrote ${COMPILED_DIR}/${MANIFEST_NAME} (${modules.length} component(s))`);
+        }
+
         return components;
     }
 

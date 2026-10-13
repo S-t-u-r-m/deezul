@@ -101,6 +101,28 @@ Deezul.init({
 });
 ```
 
+### Registering Components
+
+You do not. `deezul-dev` and `deezul-build` walk `src/`, find the components and derive
+each ref from its filename — `components/ListBlock.js` becomes `list-block` — writing the
+list to `compiled/modules.generated.js`. Combine it with your own entries once:
+
+```javascript
+import generated from './compiled/modules.generated.js';
+import modules from './modules.config.js';
+
+Deezul.init({ rootElement: 'app', modules: [...generated, ...modules] });
+```
+
+Later entries win, so naming a ref in `modules.config.js` overrides the convention.
+`modules.config.js` is still where data stores, explicit `path` entries and inline
+definitions go.
+
+A ref becomes a custom element name and so must contain a hyphen. A single-word file
+(`Home.js`) has no valid convention name: it is reported and skipped, and you either
+rename the file or register it by hand. Two files cannot claim the same ref — a ref is a
+name, not a location — and a clash is reported the same way.
+
 ### Module Entries
 
 Name a component by its **source file** under `src/` — you never write a compiled path:
