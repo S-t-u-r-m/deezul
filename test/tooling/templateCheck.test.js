@@ -115,6 +115,33 @@ check('method data factory', String(dataKeys('data() { return { x: 1 }; }')) ===
     check('no refs means no claims', checkTemplateTags(ast, undefined).length === 0);
 }
 
+// ── Positions ────────────────────────────────────────────────────────────────
+// A warning is worth much more when it says where. Lines are counted in the FILE,
+// not the template, so they match what the editor shows.
+{
+    const original = console.warn;
+    console.warn = () => {};
+    let warnings;
+    try {
+        warnings = compileComponent([
+            'export default Deezul.Component({',      // 1
+            '    template: `',                        // 2
+            '        <p>{{ good }}</p>',              // 3
+            '        <p>{{ bad }}</p>',               // 4
+            '    `,',                                 // 5
+            '    data: () => ({ good: 1 }),',         // 6
+            '});',                                    // 7
+        ].join(String.fromCharCode(10)), { componentName: 'Positioned' }).warnings;
+    } finally {
+        console.warn = original;
+    }
+
+    check('one warning', warnings.length === 1);
+    check('it is the right one', warnings[0].name === 'bad');
+    check('it carries a line', typeof warnings[0].line === 'number');
+    check('the line is the one in the FILE', warnings[0].line === 4);
+}
+
 if (failures > 0) {
     console.error(`\n  ${failures} failure(s)`);
     process.exit(1);

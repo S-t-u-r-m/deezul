@@ -159,7 +159,7 @@ export function templateReads(ast) {
 
         if (node.type === 'binding') {
             for (const dep of extractDeps(node.expression, scope)) {
-                found.push({ name: dep, where: `{{ ${node.expression.trim()} }}` });
+                found.push({ name: dep, where: `{{ ${node.expression.trim()} }}`, at: node.start });
             }
         }
 
@@ -177,7 +177,7 @@ export function templateReads(ast) {
             let inner = scope;
             if (attrs[':for']) {
                 for (const dep of extractDeps(attrs[':for'].replace(/^.*?\s+(?:in|of)\s+/, ''), scope)) {
-                    found.push({ name: dep, where: `:for="${attrs[':for']}"` });
+                    found.push({ name: dep, where: `:for="${attrs[':for']}"`, at: node.start });
                 }
                 const vars = forVars(attrs[':for']);
                 if (vars.length) {
@@ -192,7 +192,7 @@ export function templateReads(ast) {
                 if (!isBound || NON_EXPRESSION_ATTRS.has(attr)) continue;
                 if (!value) continue;
                 for (const dep of extractDeps(value, inner)) {
-                    found.push({ name: dep, where: `${attr}="${value}"` });
+                    found.push({ name: dep, where: `${attr}="${value}"`, at: node.start });
                 }
             }
 
@@ -237,7 +237,7 @@ export function checkTemplateTags(ast, knownRefs) {
             const tag = node.tag || '';
             if (tag.includes('-') && !known.has(tag) && !BUILT_IN_TAGS.has(tag) && !seen.has(tag)) {
                 seen.add(tag);
-                unknown.push({ name: tag, where: `<${tag}>` });
+                unknown.push({ name: tag, where: `<${tag}>`, at: node.start });
             }
             // A :pre subtree is literal markup, not elements to resolve.
             if ((node.attributes || {})[':pre'] !== undefined) return;

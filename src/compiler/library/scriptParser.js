@@ -74,6 +74,13 @@ export function parseComponent(source) {
 	// Template (required) — extract from original body
 	result.template = extractStringProperty(componentBody, 'template');
 
+	// Where the template's text begins in the FILE, so a position inside the template
+	// can be reported as a line of the component someone is editing. extractBalanced
+	// returned the body starting one character past the opening brace.
+	result.templateOffset = result.template
+		? startIndex + 1 + componentBody.indexOf(result.template)
+		: 0;
+
 	// Blank out template and styles strings so code examples inside them
 	// don't get picked up as real methods/data/hooks/etc.
 	const scriptBody = blankStringProperties(componentBody, ['template', 'styles']);

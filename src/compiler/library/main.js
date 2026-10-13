@@ -510,16 +510,32 @@ export function compileComponent(source, options = {}) {
 	// Only when the caller knows the project's components; compiling one file alone does not.
 	if (options.knownRefs) {
 		for (const tag of checkTemplateTags(ast, options.knownRefs)) {
-			warnings.push({ name: tag.name, where: `${tag.where} — no component registers that ref` });
+			warnings.push({ name: tag.name, at: tag.at, where: `${tag.where} — no component registers that ref` });
 		}
 	}
+	// Offsets inside the template become lines of the file, so a warning points at
+	// somewhere you can click rather than somewhere you have to search for.
+	const lineAt = (offset) => {
+		if (typeof offset !== 'number') return null;
+		const abs = (parsed.templateOffset || 0) + offset;
+		let line = 1;
+		// charCodeAt(10) rather than a newline literal: the comparison is the same and
+		// the source survives being passed through tooling that mangles escapes.
+		for (let i = 0; i < abs && i < source.length; i++) if (source.charCodeAt(i) === 10) line++;
+		return line;
+	};
+	for (const w of warnings) w.line = lineAt(w.at);
+
 	if (warnings.length) {
 		// Reported the same way style warnings already are, so every caller -- the CLI,
 		// the dev server and the build -- shows them without each wiring it up.
 		// "refers to" covers both kinds: a name read from the instance, and a tag no
 		// component provides.
 		console.warn(`${componentName}: template refers to ${warnings.length} name(s) nothing provides:`);
-		for (const w of warnings) console.warn(`    ${w.name}  in  ${w.where}`);
+		for (const w of warnings) {
+			const at = w.line ? `${componentName}.js:${w.line}` : componentName;
+			console.warn(`    ${at}  ${w.name}  in  ${w.where}`);
+		}
 	}
 
 	// 6. Combine template compilation with script sections
