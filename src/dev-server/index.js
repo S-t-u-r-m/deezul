@@ -197,6 +197,16 @@ async function serveSource(res, pathname) {
         return;
     }
 
+    // A plain module under /compiled/ -- not a component. A compiled component sits at
+    // compiled/<name>.compiled.js and keeps the author's own imports verbatim, so
+    // `./helpers.js` resolves to /compiled/helpers.js. Serve those from src/, where the
+    // author put them, so the specifier they wrote is the specifier that runs.
+    if (pathname.startsWith(`/${COMPILED_DIR}/`) && pathname.endsWith('.js')) {
+        const rel = pathname.slice(COMPILED_DIR.length + 2);
+        await serveStatic(res, SRC_DIR, `/${rel}`, (html) => html);
+        return;
+    }
+
     // Static files (index.html, main.js, configs, assets) from the app dir
     await serveStatic(res, ROOT, pathname, (html) => html);
 }

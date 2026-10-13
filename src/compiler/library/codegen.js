@@ -33,6 +33,7 @@ export function generateCode(compilation) {
 		slots,
 		refs,
 		componentName,
+		preamble,
 		// Script sections (from full component parsing)
 		data,
 		method,
@@ -58,6 +59,15 @@ export function generateCode(compilation) {
 	lines.push(` * DO NOT EDIT - This file is auto-generated`);
 	lines.push(` */`);
 	lines.push('');
+
+	// The author's module-level code first: imports, constants, helpers, module state.
+	// Emitted verbatim -- the compiler neither parses nor rewrites it, which is the
+	// whole point. Relative specifiers keep working because deezul-dev and
+	// deezul-build place non-component modules alongside the compiled output.
+	if (preamble && preamble.trim()) {
+		lines.push(preamble.trim());
+		lines.push('');
+	}
 
 	// Single default export
 	lines.push(`export default {`);

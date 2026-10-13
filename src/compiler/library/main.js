@@ -518,6 +518,8 @@ export function compileComponent(source, options = {}) {
 		...templateCompilation,
 		warnings,
 		componentName,
+		// The author's own module-level code, passed through untouched.
+		preamble: parsed.preamble,
 		// Script sections (raw code strings for output)
 		data: parsed.data,
 		method: parsed.method,

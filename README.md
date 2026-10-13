@@ -205,6 +205,33 @@ sync both ways. (`.sync` is accepted as a legacy alias.)
 <!-- Access via this.$refs.myInput -->
 ```
 
+## Component Files Are Just Modules
+
+Everything outside the `Deezul.Component({...})` call is your own JavaScript and is
+emitted into the compiled output untouched — imports, module constants, helper
+functions, module-scoped state:
+
+```js
+import { formatDate } from './format.js';
+
+const LIMIT = 10;
+let renders = 0;            // module-scoped: per module, invisible to the template
+
+export default Deezul.Component({
+    template: `<p>{{ when }}</p>`,
+    data: () => ({ at: Date.now() }),
+    computed: { when() { renders++; return formatDate(this.at, LIMIT); } },
+});
+```
+
+Relative imports are **not rewritten**: the specifier you wrote is the one that runs.
+`deezul-dev` serves non-component modules under `src/` next to the compiled components,
+and `deezul-build` copies them there, so `./format.js` resolves from both.
+
+That is also how components share logic. A component still cannot import *another
+component* — modules are registered and loaded by the registry — but anything that is
+plain JavaScript is a normal import.
+
 ## Lifecycle Hooks
 
 ```javascript

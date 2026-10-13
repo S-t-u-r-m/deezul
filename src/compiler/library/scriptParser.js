@@ -19,9 +19,21 @@
  * @param {string} source - Full JavaScript source code
  * @returns {object} Parsed component sections
  */
+/** The call parseComponent looks for. One definition, so callers agree with it. */
+const COMPONENT_CALL = /(?:export\s+default\s+)?Deezul\.Component\s*\(\s*\{/;
+
+/**
+ * Is this source a component, or a plain module that happens to live under src/?
+ * Build tooling asks before compiling, so a helper module can be carried across
+ * verbatim rather than failing to parse.
+ */
+export function isComponentSource(source) {
+	return COMPONENT_CALL.test(source);
+}
+
 export function parseComponent(source) {
 	// Find the Deezul.Component({...}) call
-	const componentMatch = source.match(/(?:export\s+default\s+)?Deezul\.Component\s*\(\s*\{/);
+	const componentMatch = source.match(COMPONENT_CALL);
 	if (!componentMatch) {
 		throw new Error('Could not find Deezul.Component({ ... }) in source');
 	}
@@ -33,8 +45,16 @@ export function parseComponent(source) {
 		throw new Error('Could not extract component body');
 	}
 
+	// Everything above the call: imports, module-level constants, helper functions,
+	// module-scoped state. The compiler does not need to understand any of it -- it is
+	// the author's own JavaScript and is emitted verbatim. Without this it was silently
+	// discarded while the method bodies that used it survived, so a component that
+	// compiled cleanly threw ReferenceError on its first binding.
+	const preamble = source.slice(0, componentMatch.index).trimEnd();
+
 	// Extract each section
 	const result = {
+		preamble,
 		template: null,
 		data: null,
 		method: null,

@@ -31,6 +31,7 @@ import { dirname, resolve, join, relative, extname, basename, isAbsolute } from 
 import { fileURLToPath } from 'url';
 import { Parser } from 'htmlparser2';
 import { compileFileToCode } from '../compiler/library/main.js';
+import { isComponentSource } from '../compiler/library/scriptParser.js';
 import { COMPILED_DIR, COMPILED_EXT } from '../runtime/modulePaths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -168,6 +169,18 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
 
     async function compileOne(file) {
         const name = toPosix(relative(srcDir, file));
+
+        // Not every .js under src/ is a component. A helper module a component imports
+        // is carried across verbatim, keeping its name, so the `./helpers.js` the author
+        // wrote resolves from the compiled component beside it.
+        const source = await readFile(file, 'utf8');
+        if (!isComponentSource(source)) {
+            const dest = join(distDir, COMPILED_DIR, relative(srcDir, file));
+            const changed = await writeIfChanged(dest, source);
+            if (changed) log(`Copied ${name} -> ${toPosix(relative(distDir, dest))}`);
+            return changed;
+        }
+
         let code;
         try {
             code = await compileFileToCode(file);
@@ -184,10 +197,13 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
 
     // A deleted source file — or a deleted directory, whose compiled mirror goes with it.
     async function removeCompiled(path) {
-        const target = extname(path) === '.js'
-            ? compiledDest(path)
-            : join(distDir, COMPILED_DIR, relative(srcDir, path));
-        if (!existsSync(target)) return false;
+        // A .js source may have produced either a compiled component or a verbatim
+        // copy, and by now it is gone, so neither can be told from the other.
+        const target = [
+            extname(path) === '.js' ? compiledDest(path) : null,
+            join(distDir, COMPILED_DIR, relative(srcDir, path)),
+        ].find((candidate) => candidate && existsSync(candidate));
+        if (!target) return false;
         await rm(target, { recursive: true, force: true });
         log(`Removed ${toPosix(relative(distDir, target))}`);
         return true;
@@ -291,10 +307,16 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
     async function buildAll() {
         await rm(distDir, { recursive: true, force: true });
         shipped = new Map();
-        const components = await walk(srcDir, (f) => f.endsWith('.js'));
-        for (const file of components) await compileOne(file);
+        // Not all of them are components -- compileOne copies plain modules across --
+        // so count what was actually compiled rather than what was walked.
+        const sources = await walk(srcDir, (f) => f.endsWith('.js'));
+        let components = 0;
+        for (const file of sources) {
+            if (isComponentSource(await readFile(file, 'utf8'))) components++;
+            await compileOne(file);
+        }
         await syncShell();
-        return components.length;
+        return components;
     }
 
     /**
