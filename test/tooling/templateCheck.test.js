@@ -90,6 +90,24 @@ check('method data factory', String(dataKeys('data() { return { x: 1 }; }')) ===
     check('a static template is quiet', w.length === 0);
 }
 
+// ── Comments inside values ───────────────────────────────────────────────────
+// Found against a real component library: an apostrophe in a comment opened a string
+// that swallowed the rest of the object, so every key after it went unseen and every
+// name the template read from them was reported as undeclared.
+{
+    const apostrophe = String.fromCharCode(39);
+    const src = [
+        '{',
+        '    first() { return 1; },',
+        '    // hand the root element the slide' + apostrophe + 's flex rules',
+        '    second() { return 2; },',
+        '    /* a block comment with a stray } and , too */',
+        '    third() { return 3; },',
+        '}',
+    ].join(String.fromCharCode(10));
+    check('a comment cannot hide later keys', String(topLevelKeys(src)) === 'first,second,third');
+}
+
 // ── Unknown component tags ───────────────────────────────────────────────────
 {
     const ast = parseTemplate(`

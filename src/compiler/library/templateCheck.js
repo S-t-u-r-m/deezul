@@ -99,6 +99,19 @@ export function topLevelKeys(src) {
             let guard = 0;
             while (i < inner.length && guard++ < inner.length) {
                 const ch = inner[i];
+                // Comments first. An apostrophe in prose -- "the slide's rules" -- would
+                // otherwise open a string that swallows the rest of the object, and every
+                // key after it would go unseen.
+                if (ch === '/' && inner[i + 1] === '/') {
+                    while (i < inner.length && inner[i] !== String.fromCharCode(10)) i++;
+                    continue;
+                }
+                if (ch === '/' && inner[i + 1] === '*') {
+                    i += 2;
+                    while (i < inner.length && !(inner[i] === '*' && inner[i + 1] === '/')) i++;
+                    i += 2;
+                    continue;
+                }
                 if (ch === '"' || ch === "'" || ch === '`') {
                     const quote = ch;
                     i++;
