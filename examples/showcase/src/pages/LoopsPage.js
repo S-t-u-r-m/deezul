@@ -37,7 +37,7 @@ export default Deezul.Component({
                     <button @click="addTodo" class="demo-btn">Add</button>
                 </div>
                 <ul class="todo-list">
-                    <li :for="todo in todos" :index="i" class="todo-item">
+                    <li :for="todo in todos" class="todo-item">
                         <span>{{ todo }}</span>
                         <button @click="removeTodo" class="remove-btn">x</button>
                     </li>

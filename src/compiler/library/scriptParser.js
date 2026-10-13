@@ -340,7 +340,7 @@ function isRegexStart(source, slashIndex) {
 	return false; // after a value → division
 }
 
-function extractBalanced(source, startIndex, open, close) {
+export function extractBalanced(source, startIndex, open, close) {
 	if (source[startIndex] !== open) {
 		return null;
 	}

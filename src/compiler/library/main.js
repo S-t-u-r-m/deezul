@@ -23,6 +23,7 @@ import { generateEvalFunctions, generateEvalCode } from './evalExtractor.js';
 import { splitDynamics, groupConditionalChains, extractDynamicTemplate, extractSourceProperties } from './dynamicSplitter.js';
 import { generateCode, astToHTML } from './codegen.js';
 import { parseComponent } from './scriptParser.js';
+import { checkTemplateBindings } from './templateCheck.js';
 import { processStyles, extractUsedSelectors, extractMatchingRules } from './styleProcessor.js';
 import { processAST } from './processor.js';
 
@@ -501,9 +502,21 @@ export function compileComponent(source, options = {}) {
 		}
 	}
 
-	// 4. Combine template compilation with script sections
+	// 5. Names the template reads that nothing declares. A warning, never an error:
+	// a prop a parent passes is assigned into the data bag at runtime and has no
+	// declaration site unless the author gives it a default in data().
+	const warnings = checkTemplateBindings(parseTemplate(parsed.template), parsed);
+	if (warnings.length) {
+		// Reported the same way style warnings already are, so every caller -- the CLI,
+		// the dev server and the build -- shows them without each wiring it up.
+		console.warn(`${componentName}: template reads ${warnings.length} name(s) nothing declares:`);
+		for (const w of warnings) console.warn(`    ${w.name}  in  ${w.where}`);
+	}
+
+	// 6. Combine template compilation with script sections
 	return {
 		...templateCompilation,
+		warnings,
 		componentName,
 		// Script sections (raw code strings for output)
 		data: parsed.data,
