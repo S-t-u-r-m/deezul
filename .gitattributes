@@ -1,0 +1,11 @@
+# One line ending in the repository, whatever the checkout platform. Without this,
+# files authored with LF show as permanently modified on Windows (core.autocrlf=true)
+# with an empty diff, which hides real changes in the noise.
+* text=auto eol=lf
+
+# Binary-ish assets git should never touch.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

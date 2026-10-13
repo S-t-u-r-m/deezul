@@ -32,3 +32,9 @@ jobs:
 
       - name: Build runtime
         run: npm run build
+
+      # Checks the showcase's components against the ambient Deezul declaration.
+      # That declaration is hand-written, so this is what notices when the runtime's
+      # JSDoc changes underneath it.
+      - name: Type-check
+        run: npm run typecheck
