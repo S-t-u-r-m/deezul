@@ -1,0 +1,21 @@
+{
+    // Type-checks the showcase's own components, which is also a live check that the
+    // ambient Deezul declaration matches how components are really written.
+    //
+    // Components only -- deliberately NOT main.js. The showcase copies the runtime
+    // bundle instead of installing the package, and `exclude` does not stop TypeScript
+    // following an import, so including main.js drags the minified deezul.esm.js into
+    // the program and reports dozens of errors from inside it. Components import
+    // nothing, so they bring nothing with them.
+    "compilerOptions": {
+        "target": "ES2022",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "allowJs": true,
+        "checkJs": true,
+        "noImplicitThis": true,
+        "noEmit": true,
+        "skipLibCheck": true
+    },
+    "include": ["src/**/*.js", "../../types/globals.d.ts"]
+}

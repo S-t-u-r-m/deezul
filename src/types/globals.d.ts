@@ -60,7 +60,14 @@ interface DzComponentDefinition<D, M, C> {
     $error?(error: unknown): void;
 }
 
-declare const Deezul: {
+/**
+ * The global is the whole runtime object, not just the compiler's entry point: a
+ * component reaches `Deezul.getDataStore(...)`, `Deezul.navigate(...)` and the rest
+ * by the same global, since it cannot import them. Those members come from the
+ * GENERATED declarations, so they stay in step with the source on their own; only
+ * `Component` is stated here, because only `Component` has no runtime to generate from.
+ */
+declare const Deezul: typeof import('./Deezul.js').default & {
     Component<
         D = {},
         M extends Record<string, DzFn> = {},

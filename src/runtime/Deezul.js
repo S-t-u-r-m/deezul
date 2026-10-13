@@ -204,7 +204,7 @@ function getNotFoundInfo() {
 /**
  * Get a reactive data store synchronously (must already be registered)
  * @param {string} ref - Data store reference name
- * @returns {Proxy|null} Reactive proxy of the data store, or null if not loaded
+ * @returns {Object<string, any>|null} Reactive proxy of the data store, or null if not loaded
  */
 function store(ref) {
 	return dataRegistry.getSync(ref);
@@ -232,7 +232,7 @@ function watchStore(ref, key, callback) {
 /**
  * Get a reactive data store by reference (async, waits for lazy-loaded stores)
  * @param {string} ref - Data store reference name
- * @returns {Promise<Proxy>} Reactive proxy of the data store
+ * @returns {Promise<Object<string, any>>} Reactive proxy of the data store
  */
 function getDataStore(ref) {
 	return dataRegistry.get(ref);
@@ -241,7 +241,7 @@ function getDataStore(ref) {
 /**
  * Get an isolated deep clone of a data store (mutations don't affect original)
  * @param {string} ref - Data store reference name
- * @returns {Promise<Proxy>} Proxied deep clone
+ * @returns {Promise<Object<string, any>>} Proxied deep clone
  */
 function cloneStore(ref) {
 	return dataRegistry.getCopy(ref);

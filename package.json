@@ -40,6 +40,7 @@
     "compile": "node src/compiler/bin/cli.js",
     "compile:watch": "node src/compiler/bin/cli.js --watch",
     "test": "node test/run.js",
+    "typecheck": "tsc -p examples/showcase/jsconfig.json",
     "dev": "node examples/showcase/server.js"
   },
   "dependencies": {

@@ -233,7 +233,7 @@ export function createModuleRegistry(name, options = {}) {
      * Get a copy of a data store (isolated, changes don't affect original)
      * Only available for data registries with enableProxy
      * @param {string} ref - Module reference
-     * @returns {Promise<Proxy>} Proxied copy
+     * @returns {Promise<Object<string, any>>} Proxied copy
      */
     async function getCopy(ref) {
         if (!enableProxy) {
@@ -573,7 +573,7 @@ export function createModuleRegistry(name, options = {}) {
      *     for changes at ANY depth.
      *
      * @param {Object} entry - Registry entry
-     * @returns {Proxy}
+     * @returns {Object<string, any>}
      */
     function _createProxy(entry) {
         const proxy = createReactiveData(entry.module);

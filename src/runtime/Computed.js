@@ -146,7 +146,7 @@ function removeManagerInterest(target, manager) {
 export class ComputedManager {
 	/**
 	 * @param {Object} dataTarget - Raw data object (for binding lookups)
-	 * @param {Proxy} componentProxy - Unified component proxy (this context for getters)
+	 * @param {Object<string, any>} componentProxy - Unified component proxy (this context for getters)
 	 */
 	constructor(dataTarget, componentProxy) {
 		this.dataTarget = dataTarget;
