@@ -34,7 +34,7 @@
   "scripts": {
     "prepare": "npm run build && npm run types",
     "build": "cd tooling/bundler && npx rollup -c rollup.config.js",
-    "types": "tsc -p tooling/types/tsconfig.json",
+    "types": "tsc -p tooling/types/tsconfig.json && node tooling/types/postbuild.js",
     "build:showcase": "node examples/showcase/build.js",
     "setup": "npm install && npm run build && npm run build:showcase",
     "compile": "node src/compiler/bin/cli.js",

@@ -365,15 +365,25 @@ They are generated from the JSDoc in `src/runtime/` by `npm run types`, which `p
 runs alongside the bundle build, so they cannot drift from the source. The runtime
 itself stays plain JavaScript.
 
-Component sources are a separate case. The compiler reads `Deezul.Component({...})` and
-emits a plain data module, so `Deezul` there is a name the compiler recognises rather
-than a value that exists at runtime — and an editor type-checking `src/` will not find
-it. Declare it once in your app:
+Component sources are covered too. `Deezul.Component({...})` is declared globally, so a
+component that imports nothing still gets completion — including on `this`, which inside
+methods, computed getters and hooks is the assembled instance: the properties `data()`
+returned, the sibling methods, and each computed's *return value*.
 
-```ts
-// types/globals.d.ts
-declare const Deezul: any;
+```js
+data: () => ({ count: 0 }),
+computed: { doubled() { return this.count * 2; } },      // this.count is number
+methods:  { show() { return this.doubled.toFixed(0); } } // this.doubled is number
 ```
+
+That needs `noImplicitThis`, which `ThisType` depends on:
+
+```json
+{ "compilerOptions": { "checkJs": true, "noImplicitThis": true } }
+```
+
+Props need no separate declaration: the runtime merges them into the data bag, so declare
+one in `data()` and its default doubles as the value used when a parent omits it.
 
 ## Key Patterns
 
