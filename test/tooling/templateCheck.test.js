@@ -9,7 +9,8 @@
  */
 
 import { compileComponent } from '../../src/compiler/library/main.js';
-import { topLevelKeys, dataKeys } from '../../src/compiler/library/templateCheck.js';
+import { topLevelKeys, dataKeys, checkTemplateTags } from '../../src/compiler/library/templateCheck.js';
+import { parseTemplate } from '../../src/compiler/library/parser.js';
 
 let failures = 0;
 function check(name, cond) {
@@ -87,6 +88,31 @@ check('method data factory', String(dataKeys('data() { return { x: 1 }; }')) ===
 {
     const w = warningsFor('export default Deezul.Component({ template: `<p>hello</p>` });');
     check('a static template is quiet', w.length === 0);
+}
+
+// ── Unknown component tags ───────────────────────────────────────────────────
+{
+    const ast = parseTemplate(`
+        <section>
+            <h1>plain html</h1>
+            <stat-tile></stat-tile>
+            <stat-tyle></stat-tyle>
+            <router-component></router-component>
+            <pre :pre><code><made-up></made-up></code></pre>
+        </section>
+    `);
+    const unknown = checkTemplateTags(ast, ['stat-tile']).map((t) => t.name);
+
+    check('a registered tag is quiet', !unknown.includes('stat-tile'));
+    check('a misspelled tag is reported', unknown.includes('stat-tyle'));
+    check('a built-in is quiet', !unknown.includes('router-component'));
+    check('plain HTML is quiet', !unknown.includes('section') && !unknown.includes('h1'));
+    check('a tag inside :pre is quiet', !unknown.includes('made-up'));
+    check('nothing else is reported', unknown.length === 1);
+
+    // Without a ref list there is no project to compare against, so it says nothing
+    // rather than reporting every component in the file.
+    check('no refs means no claims', checkTemplateTags(ast, undefined).length === 0);
 }
 
 if (failures > 0) {

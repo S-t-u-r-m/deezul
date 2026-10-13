@@ -23,7 +23,7 @@ import { generateEvalFunctions, generateEvalCode } from './evalExtractor.js';
 import { splitDynamics, groupConditionalChains, extractDynamicTemplate, extractSourceProperties } from './dynamicSplitter.js';
 import { generateCode, astToHTML } from './codegen.js';
 import { parseComponent } from './scriptParser.js';
-import { checkTemplateBindings } from './templateCheck.js';
+import { checkTemplateBindings, checkTemplateTags } from './templateCheck.js';
 import { processStyles, extractUsedSelectors, extractMatchingRules } from './styleProcessor.js';
 import { processAST } from './processor.js';
 
@@ -505,11 +505,20 @@ export function compileComponent(source, options = {}) {
 	// 5. Names the template reads that nothing declares. A warning, never an error:
 	// a prop a parent passes is assigned into the data bag at runtime and has no
 	// declaration site unless the author gives it a default in data().
-	const warnings = checkTemplateBindings(parseTemplate(parsed.template), parsed);
+	const ast = parseTemplate(parsed.template);
+	const warnings = checkTemplateBindings(ast, parsed);
+	// Only when the caller knows the project's components; compiling one file alone does not.
+	if (options.knownRefs) {
+		for (const tag of checkTemplateTags(ast, options.knownRefs)) {
+			warnings.push({ name: tag.name, where: `${tag.where} — no component registers that ref` });
+		}
+	}
 	if (warnings.length) {
 		// Reported the same way style warnings already are, so every caller -- the CLI,
 		// the dev server and the build -- shows them without each wiring it up.
-		console.warn(`${componentName}: template reads ${warnings.length} name(s) nothing declares:`);
+		// "refers to" covers both kinds: a name read from the instance, and a tag no
+		// component provides.
+		console.warn(`${componentName}: template refers to ${warnings.length} name(s) nothing provides:`);
 		for (const w of warnings) console.warn(`    ${w.name}  in  ${w.where}`);
 	}
 

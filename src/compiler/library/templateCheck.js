@@ -207,6 +207,47 @@ export function templateReads(ast) {
     return found;
 }
 
+/** Components the runtime provides itself, registered by nobody. */
+const BUILT_IN_TAGS = new Set(['router-component', 'dz-component', 'dz-404']);
+
+/**
+ * Component tags the template uses that no module provides.
+ *
+ * Only hyphenated tags are considered: that is what makes a custom element, and an
+ * unhyphenated tag is ordinary HTML. Needs the project's ref list, so it runs where the
+ * manifest is known -- the dev server and the build. Compiling one file on its own has
+ * no project to compare against, and reports nothing rather than guessing.
+ *
+ * @param {Object} ast - parsed template
+ * @param {Set<string>|string[]} knownRefs
+ * @returns {Array<{name: string, where: string}>}
+ */
+export function checkTemplateTags(ast, knownRefs) {
+    // No list at all means no project to compare against -- say nothing. An EMPTY list is
+    // different: a project that genuinely has no components, where every tag is unknown.
+    if (knownRefs === undefined || knownRefs === null) return [];
+
+    const known = knownRefs instanceof Set ? knownRefs : new Set(knownRefs);
+    const seen = new Set();
+    const unknown = [];
+
+    (function walk(node) {
+        if (!node) return;
+        if (node.type === 'element') {
+            const tag = node.tag || '';
+            if (tag.includes('-') && !known.has(tag) && !BUILT_IN_TAGS.has(tag) && !seen.has(tag)) {
+                seen.add(tag);
+                unknown.push({ name: tag, where: `<${tag}>` });
+            }
+            // A :pre subtree is literal markup, not elements to resolve.
+            if ((node.attributes || {})[':pre'] !== undefined) return;
+        }
+        for (const child of node.children || []) walk(child);
+    })(ast);
+
+    return unknown;
+}
+
 /**
  * Names the template reads that the component does not declare.
  *

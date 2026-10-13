@@ -186,7 +186,10 @@ async function serveSource(res, pathname) {
     if (m) {
         const srcPath = path.join(SRC_DIR, `${m[1]}.js`);
         try {
-            const code = await compileFileToCode(srcPath); // returns a string, in memory
+            // The project's components, so an unknown tag is reported rather than
+            // rendering as an inert unknown element.
+            const { modules } = await buildManifest(SRC_DIR);
+            const code = await compileFileToCode(srcPath, { knownRefs: modules.map((x) => x.ref) });
             res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache' });
             res.end(code);
         } catch (err) {

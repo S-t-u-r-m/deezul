@@ -168,12 +168,25 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
         return join(distDir, COMPILED_DIR, dirname(rel), basename(rel, extname(rel)) + COMPILED_EXT);
     };
 
+    // The refs this project provides, for the unknown-tag check. Cached per build and
+    // cleared whenever a source file changes, since a new component adds a ref.
+    let refCache = null;
+    const knownRefs = () => refCache;
+    async function refreshRefs() {
+        refCache = (await buildManifest(srcDir)).modules.map((m) => m.ref);
+    }
+    /** Incremental rebuilds come through compileOne without a full pass first. */
+    async function ensureRefs() {
+        if (refCache === null) await refreshRefs();
+    }
+
     async function compileOne(file) {
         const name = toPosix(relative(srcDir, file));
 
         // Not every .js under src/ is a component. A helper module a component imports
         // is carried across verbatim, keeping its name, so the `./helpers.js` the author
         // wrote resolves from the compiled component beside it.
+        await ensureRefs();
         const source = await readFile(file, 'utf8');
         if (!isComponentSource(source)) {
             const dest = join(distDir, COMPILED_DIR, relative(srcDir, file));
@@ -184,7 +197,7 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
 
         let code;
         try {
-            code = await compileFileToCode(file);
+            code = await compileFileToCode(file, { knownRefs: knownRefs() });
         } catch (err) {
             if (!tolerant) throw err;
             warn(`[compile] ${name}: ${err.message}`);
@@ -311,6 +324,7 @@ export function createPipeline(root, { log = console.log, warn = console.warn, t
         // Not all of them are components -- compileOne copies plain modules across --
         // so count what was actually compiled rather than what was walked.
         const sources = await walk(srcDir, (f) => f.endsWith('.js'));
+        await refreshRefs();
         let components = 0;
         for (const file of sources) {
             if (isComponentSource(await readFile(file, 'utf8'))) components++;
