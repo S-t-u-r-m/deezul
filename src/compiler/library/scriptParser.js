@@ -353,7 +353,7 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
  * This is the standard JS lexer heuristic; the rare ambiguous case (`)` before a
  * regex, as in `if (x) /re/.test(...)`) is uncommon in component code.
  */
-function isRegexStart(source, slashIndex) {
+export function isRegexStart(source, slashIndex) {
 	let j = slashIndex - 1;
 	while (j >= 0 && (source[j] === ' ' || source[j] === '\t' || source[j] === '\n' || source[j] === '\r')) j--;
 	if (j < 0) return true; // start of input → regex

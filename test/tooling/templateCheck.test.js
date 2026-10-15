@@ -108,6 +108,17 @@ check('method data factory', String(dataKeys('data() { return { x: 1 }; }')) ===
     check('a comment cannot hide later keys', String(topLevelKeys(src)) === 'first,second,third');
 }
 
+// ── Regex literals inside values ──────────────────────────────────────
+// The same shape as the comment bug: a delimiter the scanner did not know about,
+// holding braces or quotes, swallowing every key after it. scriptParser already had
+// isRegexStart for this, so the scanner uses that rather than guessing a second time.
+{
+    const q = String.fromCharCode(39);
+    check('a regex holding a brace', String(topLevelKeys('{ a() { return /[}]/.test(x); }, b: 1 }')) === 'a,b');
+    check('a regex holding an apostrophe', String(topLevelKeys('{ a() { return /don' + q + 't/.test(x); }, b: 1 }')) === 'a,b');
+    check('division is not mistaken for a regex', String(topLevelKeys('{ a() { return x / y; }, b: 1 }')) === 'a,b');
+}
+
 // ── Unknown component tags ───────────────────────────────────────────────────
 {
     const ast = parseTemplate(`

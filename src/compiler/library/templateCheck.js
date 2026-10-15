@@ -24,7 +24,7 @@
  */
 
 import { extractDeps } from './exprWalker.js';
-import { extractBalanced } from './scriptParser.js';
+import { extractBalanced, isRegexStart } from './scriptParser.js';
 
 /** Members the runtime puts on every component, declared by nobody. */
 const RUNTIME_MEMBERS = new Set(['$refs', '$emit', '$route', '$el', '$props']);
@@ -80,6 +80,19 @@ export function topLevelKeys(src) {
             i += 2;
             continue;
         }
+        if (c === '/' && isRegexStart(inner, i)) {
+            i++;
+            let inClass = false;
+            while (i < inner.length) {
+                const r = inner[i];
+                if (r === String.fromCharCode(92)) { i += 2; continue; }
+                if (r === '[') inClass = true;
+                else if (r === ']') inClass = false;
+                else if (r === '/' && !inClass) { i++; break; }
+                i++;
+            }
+            continue;
+        }
         if (c === '{' || c === '[' || c === '(') { depth++; i++; continue; }
         if (c === '}' || c === ']' || c === ')') { depth--; i++; continue; }
 
@@ -110,6 +123,19 @@ export function topLevelKeys(src) {
                     i += 2;
                     while (i < inner.length && !(inner[i] === '*' && inner[i + 1] === '/')) i++;
                     i += 2;
+                    continue;
+                }
+                if (ch === '/' && isRegexStart(inner, i)) {
+                    i++;
+                    let inClass = false;
+                    while (i < inner.length) {
+                        const r = inner[i];
+                        if (r === String.fromCharCode(92)) { i += 2; continue; }
+                        if (r === '[') inClass = true;
+                        else if (r === ']') inClass = false;
+                        else if (r === '/' && !inClass) { i++; break; }
+                        i++;
+                    }
                     continue;
                 }
                 if (ch === '"' || ch === "'" || ch === '`') {
