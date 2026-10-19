@@ -16,6 +16,8 @@
  */
 
 import { compileFile, compileFileToCode, dumpCompilation } from '../library/main.js';
+import { buildManifest } from '../../build/manifest.js';
+import { isComponentSource } from '../library/scriptParser.js';
 import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
 import { watch } from 'chokidar';
 import { join, basename, extname, dirname, resolve, relative } from 'path';
@@ -104,18 +106,18 @@ Examples:
  * Compile a single file
  */
 async function compileSingleFile(inputPath, outputPath, options = {}) {
-	const { debug, sharedStyles = [] } = options;
+	const { debug, sharedStyles = [], knownRefs = null } = options;
 
 	try {
 		console.log(`Compiling: ${inputPath}`);
 
-		const compilation = await compileFile(inputPath, { sharedStyles });
+		const compilation = await compileFile(inputPath, { sharedStyles, knownRefs });
 
 		if (debug) {
 			console.log(dumpCompilation(compilation));
 		}
 
-		const code = await compileFileToCode(inputPath, { sharedStyles });
+		const code = await compileFileToCode(inputPath, { sharedStyles, knownRefs });
 
 		// Ensure output directory exists
 		const outDir = dirname(outputPath);
@@ -142,7 +144,7 @@ async function compileSingleFile(inputPath, outputPath, options = {}) {
  * Compile all files in a directory
  */
 async function compileDirectory(inputDir, outputDir, options = {}) {
-	const { extension = '.compiled.js', debug, sharedStyles = [] } = options;
+	const { extension = '.compiled.js', debug, sharedStyles = [], knownRefs = null } = options;
 	const results = [];
 
 	async function processDir(dir, outDir) {
@@ -154,12 +156,12 @@ async function compileDirectory(inputDir, outputDir, options = {}) {
 			if (entry.isDirectory()) {
 				// Recurse into subdirectory
 				await processDir(inputPath, join(outDir, entry.name));
-			} else if (entry.isFile() && isTemplateFile(entry.name)) {
+			} else if (entry.isFile() && await isCompilable(inputPath)) {
 				// Compile template file
 				const outputName = basename(entry.name, extname(entry.name)) + extension;
 				const outputPath = join(outDir, outputName);
 
-				const result = await compileSingleFile(inputPath, outputPath, { debug, sharedStyles });
+				const result = await compileSingleFile(inputPath, outputPath, { debug, sharedStyles, knownRefs });
 				results.push(result);
 			}
 		}
@@ -169,12 +171,35 @@ async function compileDirectory(inputDir, outputDir, options = {}) {
 	return results;
 }
 
+/** Extensions worth opening at all. `.js` is what a component actually is. */
+const COMPILABLE_EXTENSIONS = new Set(['.js', '.mjs', '.html', '.dz', '.template']);
+
 /**
- * Check if file is a template file
+ * Is this a file the compiler should compile?
+ *
+ * A component is a .js file whose source calls Deezul.Component -- which is what the
+ * dev server and the build both test, via isComponentSource. This used to accept only
+ * .html, .dz and .template: extensions from an era of custom component files, none of
+ * which a deezul component has ever used. The effect was that `deezul-compile <dir>`
+ * walked a source tree, matched nothing, and reported "Compiled 0 files" as a success.
+ *
+ * Reading the file to decide is why this is async. The legacy extensions still pass on
+ * their name alone, in case anything out there still uses them.
+ *
+ * @param {string} path - full path to the file
+ * @returns {Promise<boolean>}
  */
-function isTemplateFile(filename) {
-	const ext = extname(filename).toLowerCase();
-	return ext === '.html' || ext === '.dz' || ext === '.template';
+async function isCompilable(path) {
+	const ext = extname(path).toLowerCase();
+	if (!COMPILABLE_EXTENSIONS.has(ext)) return false;
+	if (ext !== '.js' && ext !== '.mjs') return true;
+	// A compiled component is itself a .js file with no Deezul.Component call, so
+	// re-running the compiler over its own output skips it rather than failing on it.
+	try {
+		return isComponentSource(await readFile(path, 'utf-8'));
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -189,7 +214,7 @@ function getOutputPath(inputPath, outputDir, extension) {
  * Watch mode - recompile on changes
  */
 async function watchMode(inputDir, outputDir, options = {}) {
-	const { extension = '.compiled.js', debug, sharedStyles = [] } = options;
+	const { extension = '.compiled.js', debug, sharedStyles = [], knownRefs = null } = options;
 
 	console.log(`Watching ${inputDir} for changes...`);
 	console.log(`Output: ${outputDir}`);
@@ -206,24 +231,26 @@ async function watchMode(inputDir, outputDir, options = {}) {
 	});
 
 	watcher.on('add', async (filePath) => {
-		if (isTemplateFile(filePath)) {
+		if (await isCompilable(filePath)) {
 			console.log(`\nFile added: ${filePath}`);
 			const outputPath = getOutputPath(filePath, outputDir, extension);
-			await compileSingleFile(filePath, outputPath, { debug, sharedStyles });
+			await compileSingleFile(filePath, outputPath, { debug, sharedStyles, knownRefs });
 		}
 	});
 
 	watcher.on('change', async (filePath) => {
-		if (isTemplateFile(filePath)) {
+		if (await isCompilable(filePath)) {
 			console.log(`\nFile changed: ${filePath}`);
 			const relPath = relative(inputDir, filePath);
 			const outputPath = join(outputDir, dirname(relPath), basename(relPath, extname(relPath)) + extension);
-			await compileSingleFile(filePath, outputPath, { debug, sharedStyles });
+			await compileSingleFile(filePath, outputPath, { debug, sharedStyles, knownRefs });
 		}
 	});
 
+	// The file is already gone by now, so this decides on the name alone -- isCompilable
+	// would have to read it.
 	watcher.on('unlink', (filePath) => {
-		if (isTemplateFile(filePath)) {
+		if (COMPILABLE_EXTENSIONS.has(extname(filePath).toLowerCase())) {
 			console.log(`\nFile removed: ${filePath}`);
 			// Optionally delete compiled file
 		}
@@ -276,13 +303,27 @@ async function main() {
 	try {
 		const inputStat = await stat(inputPath);
 
+		// The project's component refs, from the same walk the dev server and the build
+		// use. A component's own tag is rewritten into its host element, and an unknown
+		// tag is reported -- both need to know what the project registers, so all three
+		// entry points derive it the same way rather than one of them emitting different
+		// output than the others.
+		const manifestDir = inputStat.isDirectory() ? inputPath : dirname(inputPath);
+		let knownRefs = null;
+		try {
+			const { modules } = await buildManifest(manifestDir);
+			knownRefs = modules.map((m) => m.ref);
+		} catch (err) {
+			console.warn(`Could not read component refs from ${manifestDir}: ${err.message}`);
+		}
+
 		if (inputStat.isFile()) {
 			// Single file compilation
 			const outputPath = args.output
 				? resolve(args.output)
 				: inputPath.replace(extname(inputPath), args.extension);
 
-			await compileSingleFile(inputPath, outputPath, { debug: args.debug, sharedStyles });
+			await compileSingleFile(inputPath, outputPath, { debug: args.debug, sharedStyles, knownRefs });
 		} else if (inputStat.isDirectory()) {
 			// Directory compilation
 			const outputDir = args.output ? resolve(args.output) : inputPath;
@@ -291,13 +332,15 @@ async function main() {
 				await watchMode(inputPath, outputDir, {
 					extension: args.extension,
 					debug: args.debug,
-					sharedStyles
+					sharedStyles,
+					knownRefs
 				});
 			} else {
 				const results = await compileDirectory(inputPath, outputDir, {
 					extension: args.extension,
 					debug: args.debug,
-					sharedStyles
+					sharedStyles,
+					knownRefs
 				});
 
 				const success = results.filter(r => r.success).length;

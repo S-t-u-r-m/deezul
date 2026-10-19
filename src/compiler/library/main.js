@@ -23,7 +23,7 @@ import { generateEvalFunctions, generateEvalCode } from './evalExtractor.js';
 import { splitDynamics, groupConditionalChains, extractDynamicTemplate, extractSourceProperties } from './dynamicSplitter.js';
 import { generateCode, astToHTML } from './codegen.js';
 import { parseComponent } from './scriptParser.js';
-import { checkTemplateBindings, checkTemplateTags } from './templateCheck.js';
+import { checkTemplateBindings, checkTemplateTags, rewriteComponentTags } from './templateCheck.js';
 import { processStyles, extractUsedSelectors, extractMatchingRules } from './styleProcessor.js';
 import { processAST } from './processor.js';
 
@@ -37,10 +37,15 @@ import { basename, extname } from 'path';
  * @returns {object} Compilation result
  */
 export function compile(template, options = {}) {
-	const { componentName = 'Anonymous', optimized = true } = options;
+	const { componentName = 'Anonymous', optimized = true, knownRefs = null } = options;
 
 	// 1. Parse template into AST
 	const ast = parseTemplate(template);
+	// A component's own tag becomes the host element that renders it, before anything
+	// reads the tree -- so binding detection, the serialized HTML and the bytecode all
+	// see one form. Needs the project's refs; compiling a lone template has none and
+	// leaves the tags alone.
+	rewriteComponentTags(ast, knownRefs);
 	assertForIfIsDecidable(ast, componentName);
 
 	if (optimized) {
@@ -465,7 +470,10 @@ export function compileComponent(source, options = {}) {
 	}
 
 	// 2. Compile the template
-	const templateCompilation = compile(parsed.template, { componentName });
+	const templateCompilation = compile(parsed.template, {
+		componentName,
+		knownRefs: options.knownRefs || null
+	});
 
 	// 3. Process styles if present - always minify by default
 	let processedStyle = null;

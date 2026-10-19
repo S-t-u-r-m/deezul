@@ -269,6 +269,64 @@ export function templateReads(ast) {
 const BUILT_IN_TAGS = new Set(['router-component', 'dz-component', 'dz-404']);
 
 /**
+ * Rewrite a component's own tag into the host element that renders it.
+ *
+ *     <selection-list :person-id="id">  ->  <dz-component dz-type="selection-list" :person-id="id">
+ *
+ * WHY THIS EXISTS
+ * Only `dz-component` and `router-component` are ever customElements.define()d -- one
+ * generic host for every component, which is what keeps the element registry from
+ * growing a permanent entry per block type. The cost was that composing one component
+ * inside another had no readable form: the author had to write the host element and name
+ * the ref in an attribute, and a bare `<selection-list>` rendered as an inert unknown
+ * element with nothing to upgrade it. checkTemplateTags below has always validated the
+ * bare form against the manifest, so the compiler described a syntax the runtime did not
+ * implement.
+ *
+ * This closes that gap at compile time. The runtime is untouched, `dz-component` stays
+ * the single element, and the authored template reads the way a reader expects.
+ *
+ * Needs the project's ref list, for the same reason checkTemplateTags does: an unknown
+ * hyphenated tag may be a genuine custom element the page defines elsewhere, and
+ * rewriting it would break it. Only a tag a module actually registers is rewritten.
+ *
+ * @param {Object} ast - parsed template, mutated in place
+ * @param {Set<string>|string[]} knownRefs
+ * @returns {string[]} the refs that were rewritten, in document order
+ */
+export function rewriteComponentTags(ast, knownRefs) {
+    if (knownRefs === undefined || knownRefs === null) return [];
+
+    const known = knownRefs instanceof Set ? knownRefs : new Set(knownRefs);
+    const rewritten = [];
+
+    (function walk(node) {
+        if (!node) return;
+        if (node.type === 'element') {
+            const attrs = node.attributes || {};
+            // A :pre subtree is literal markup -- the showcase prints deezul's own syntax
+            // as example code, and rewriting it would corrupt the documentation.
+            if (attrs[':pre'] !== undefined) return;
+
+            const tag = node.tag || '';
+            if (
+                tag.includes('-') &&
+                known.has(tag) &&
+                !BUILT_IN_TAGS.has(tag) &&
+                attrs['dz-type'] === undefined
+            ) {
+                node.attributes = { 'dz-type': tag, ...attrs };
+                node.tag = 'dz-component';
+                rewritten.push(tag);
+            }
+        }
+        for (const child of node.children || []) walk(child);
+    })(ast);
+
+    return rewritten;
+}
+
+/**
  * Component tags the template uses that no module provides.
  *
  * Only hyphenated tags are considered: that is what makes a custom element, and an
