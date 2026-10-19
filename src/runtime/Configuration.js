@@ -62,6 +62,23 @@ export const framework = {
 };
 
 // ============================================================================
+// DATA SOURCE CONFIGURATION
+// ============================================================================
+
+/**
+ * Where fetched data stores come from, and how long their content stays fresh.
+ *
+ * A data store declared with a `source` is read from the server rather than imported
+ * or inlined. `base` is prefixed to a relative source, so one setting moves a whole
+ * app between a dev API and a production one without touching any module config.
+ * `ttl` is the default staleness in seconds; 0 means fetched once and then kept.
+ */
+export const data = {
+	base: '',   // Prefix for relative `source` URLs (e.g. '/api' or 'https://host/api')
+	ttl: 0      // Default seconds before a fetched store is stale; 0 = never
+};
+
+// ============================================================================
 // CONFIGURATION API
 // ============================================================================
 
@@ -82,6 +99,9 @@ export const framework = {
  * @param {string} [config.directives.event] - Event prefix (default '@')
  * @param {Object} [config.framework] - Framework defaults
  * @param {string} [config.framework.rootElement] - Root element ID
+ * @param {Object} [config.data] - Data source overrides
+ * @param {string} [config.data.base] - Prefix for relative store `source` URLs
+ * @param {number} [config.data.ttl] - Default staleness in seconds for fetched stores
  */
 export function configure(config = {}) {
 	if (config.logging) {
@@ -112,6 +132,11 @@ export function configure(config = {}) {
 	if (config.framework) {
 		if (config.framework.rootElement !== undefined) framework.rootElement = config.framework.rootElement;
 	}
+
+	if (config.data) {
+		if (config.data.base !== undefined) data.base = config.data.base;
+		if (config.data.ttl !== undefined) data.ttl = config.data.ttl;
+	}
 }
 
 /**
@@ -125,8 +150,9 @@ export function getConfig() {
 		directives: { ...directives, reserved: [...directives.reserved] },
 		logging: { level: logging.level, modules: { ...logging.modules } },
 		errors: { ...errors },
-		framework: { ...framework }
+		framework: { ...framework },
+		data: { ...data }
 	};
 }
 
-export default { directives, logging, errors, framework, configure, getConfig };
+export default { directives, logging, errors, framework, data, configure, getConfig };

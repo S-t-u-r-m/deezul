@@ -67,6 +67,7 @@ function init(options = {}) {
 
 	// Apply configuration overrides before anything else
 	configure({
+		data: options.data,
 		logging: options.logging,
 		errors: options.errors,
 		directives: options.directives,
@@ -90,7 +91,12 @@ function init(options = {}) {
 				{
 					persistent: mod.persistent !== false,
 					localStorage: mod.localStorage || false,
-					localStorageKey: mod.localStorageKey
+					localStorageKey: mod.localStorageKey,
+					// A store read from the server. `persistent: false` finally means
+					// something here: unlike component code, a store with a source can
+					// be discarded and read again, because the server holds the truth.
+					source: mod.source || null,
+					ttl: mod.ttl !== undefined ? mod.ttl : null
 				}
 			);
 		} else {
@@ -248,6 +254,20 @@ function cloneStore(ref) {
 }
 
 /**
+ * Read a server-backed store again now, whatever its ttl says.
+ *
+ * The new content is merged into the store's existing target, so every component already
+ * bound to it re-renders rather than keeping a proxy over replaced data. A failed read
+ * leaves the last good content in place and resolves false.
+ *
+ * @param {string} ref - Data store reference name
+ * @returns {Promise<boolean>} whether the read succeeded
+ */
+function refreshStore(ref) {
+	return dataRegistry.refresh(ref);
+}
+
+/**
  * Programmatically create a dz-component element
  * @param {string} type - Component type name
  * @param {Object} [options]
@@ -300,6 +320,7 @@ const Deezul = {
 	persistStore,
 	watchStore,
 	getDataStore,
+	refreshStore,
 	cloneStore,
 
 	// Component creation
@@ -340,4 +361,4 @@ if (typeof window !== 'undefined') window.Deezul = Deezul;
 else if (typeof globalThis !== 'undefined') globalThis.Deezul = Deezul;
 
 export default Deezul;
-export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, cloneStore, createComponent, addGlobalStyles, isInitialized, nextTick, markRaw, toRaw, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };
+export { init, navigate, getCurrentRoute, getNotFoundInfo, registerDirective, unregisterDirective, getDirective, getDirectiveNames, registerGlobalErrorHandler, unregisterGlobalErrorHandler, store, persistStore, watchStore, getDataStore, refreshStore, cloneStore, createComponent, addGlobalStyles, isInitialized, nextTick, markRaw, toRaw, REBINDABLE, REBIND, PARENT_PROXY, configure, getConfig };

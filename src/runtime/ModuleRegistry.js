@@ -27,6 +27,7 @@ import { deepClone } from './helpers.js';
 import { createLogger } from './Logger.js';
 import { isReservedPrefix } from './LibraryComponents.js';
 import { modulePath } from './modulePaths.js';
+import { data as dataConfig } from './Configuration.js';
 
 // Minimal pass-through handlers for getCopy() clones — plain reads/writes,
 // no persistence, no watcher notifications.
@@ -81,7 +82,9 @@ export function createModuleRegistry(name, options = {}) {
             persistent = true,
             metadata = {},
             localStorage = false,
-            localStorageKey = null
+            localStorageKey = null,
+            source = null,
+            ttl = null
         } = opts;
 
         // Validate: 'dz:' prefix is reserved for library components
@@ -102,7 +105,12 @@ export function createModuleRegistry(name, options = {}) {
             module: null,
             // Data store specific
             localStorage: enableLocalStorage && localStorage,
-            localStorageKey: localStorageKey || `deezul_${name}_${ref}`
+            localStorageKey: localStorageKey || `deezul_${name}_${ref}`,
+            // A store read from the server rather than imported or inlined. `ttl` is
+            // its own staleness in seconds; null falls back to the configured default.
+            source,
+            ttl,
+            loadedAt: 0
         };
 
         // String = module path for lazy loading
@@ -208,8 +216,11 @@ export function createModuleRegistry(name, options = {}) {
      * @returns {Promise<any>} Module content
      */
     async function get(ref) {
-        // For data stores, check proxy cache first
+        // For data stores, check proxy cache first -- but a fetched store that has gone
+        // stale is re-read into the SAME target first, so the proxy every bound component
+        // already holds stays valid and their DOM updates from the new content.
         if (enableProxy && proxyCache.has(ref)) {
+            if (_isStale(registry.get(ref))) await refresh(ref);
             return proxyCache.get(ref);
         }
 
@@ -399,13 +410,19 @@ export function createModuleRegistry(name, options = {}) {
             const inUse = instances && instances.size > 0;
             const entry = registry.get(ref);
 
-            if (!inUse && entry && entry.loaded) {
+            // Only what can be obtained again. A module registered with inline data has
+            // no path and no source, so collecting it would destroy the only copy and
+            // every later get() would return null -- the content is not recoverable.
+            const reloadable = entry && (entry.modulePath || entry.source);
+
+            if (!inUse && entry && entry.loaded && reloadable) {
                 entry.module = null;
                 entry.loaded = false;
                 proxyCache.delete(ref);
                 collected++;
                 logger.info(`Collected '${ref}'`);
-            } else if (inUse) {
+                entry.loadedAt = 0;
+            } else if (inUse || (entry && entry.loaded && !reloadable)) {
                 skipped++;
             }
         }
@@ -521,6 +538,14 @@ export function createModuleRegistry(name, options = {}) {
 
         if (entry.loaded) return entry;
 
+        // A server-backed store. Unlike an import, this can be done again later -- which
+        // is what makes staleness, refresh() and gc() meaningful for these and not for
+        // component code.
+        if (entry.source) {
+            const ok = await _fetchInto(entry);
+            return ok || entry.module !== null ? entry : null;
+        }
+
         if (entry.modulePath) {
             try {
                 logger.info(`Loading '${ref}' from ${entry.modulePath}`);
@@ -558,6 +583,109 @@ export function createModuleRegistry(name, options = {}) {
         }
 
         return entry;
+    }
+
+    /**
+     * A store's absolute URL. A relative `source` is resolved against the configured
+     * base, so moving an app between a dev API and a production one is one setting
+     * rather than an edit to every module entry.
+     *
+     * @param {string} source
+     * @returns {string}
+     */
+    function _sourceUrl(source) {
+        const base = dataConfig.base || '';
+        if (!base) return source;
+        // Already absolute: a scheme, or protocol-relative.
+        if (source.includes('://') || source.startsWith('//')) return source;
+        // Trimmed by hand rather than by regex, so this file stays free of backslash
+        // escapes -- the same reason the calendar store's header gives.
+        let left = base;
+        while (left.endsWith('/')) left = left.slice(0, -1);
+        let right = source;
+        while (right.startsWith('/')) right = right.slice(1);
+        return `${left}/${right}`;
+    }
+
+    /**
+     * Has a fetched store outlived its freshness?
+     * A ttl of 0 (the default) means it is read once and then kept until something asks
+     * for it again, which is the right default for reference data that rarely moves.
+     *
+     * @param {Object} entry
+     * @returns {boolean}
+     */
+    function _isStale(entry) {
+        if (!entry || !entry.source || !entry.loaded) return false;
+        const ttl = entry.ttl !== null && entry.ttl !== undefined ? entry.ttl : dataConfig.ttl;
+        if (!ttl) return false;
+        return Date.now() - entry.loadedAt > ttl * 1000;
+    }
+
+    /**
+     * Read a store from its source.
+     *
+     * On the FIRST read the content becomes the entry's module. On a later read the new
+     * content is merged into the existing target instead of replacing it, because every
+     * component bound to this store holds a proxy over that target -- swapping the object
+     * would leave them all reading the old one. Keys that disappeared server-side are
+     * deleted so the store reflects the response rather than accumulating.
+     *
+     * A failed read never clears what is already there: a store that went stale and could
+     * not be re-read keeps serving its last good content, and says so.
+     *
+     * @param {Object} entry
+     * @returns {Promise<boolean>} whether the read succeeded
+     */
+    async function _fetchInto(entry) {
+        const url = _sourceUrl(entry.source);
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+            const next = await response.json();
+            if (next === null || typeof next !== 'object') {
+                throw new Error(`expected an object, got ${next === null ? 'null' : typeof next}`);
+            }
+
+            if (!entry.loaded || entry.module === null) {
+                entry.module = next;
+                entry.loaded = true;
+            } else {
+                const target = entry.module[TARGET] || entry.module;
+                const live = enableProxy ? (proxyCache.get(entry.ref) || target) : target;
+                for (const key of Object.keys(target)) {
+                    if (!(key in next)) delete live[key];
+                }
+                Object.assign(live, next);
+            }
+
+            entry.loadedAt = Date.now();
+            logger.debug(`Read '${entry.ref}' from ${url}`);
+            if (onLoad) onLoad(entry.ref, entry.module);
+            return true;
+        } catch (error) {
+            logger.error(`Failed to read '${entry.ref}' from ${url}`, error);
+            return false;
+        }
+    }
+
+    /**
+     * Read a server-backed store again now, whatever its ttl says.
+     *
+     * @param {string} ref
+     * @returns {Promise<boolean>} whether the read succeeded
+     */
+    async function refresh(ref) {
+        const entry = registry.get(ref);
+        if (!entry) {
+            logger.error(`'${ref}' not found`);
+            return false;
+        }
+        if (!entry.source) {
+            logger.warn(`Cannot refresh '${ref}' - it has no source`);
+            return false;
+        }
+        return _fetchInto(entry);
     }
 
     /**
@@ -702,6 +830,9 @@ export function createModuleRegistry(name, options = {}) {
 
         // Store watchers
         watch: enableProxy ? watch : undefined,
+
+        // Server-backed stores
+        refresh,
 
         // Utilities
         getStats,
